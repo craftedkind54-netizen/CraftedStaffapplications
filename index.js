@@ -11,16 +11,18 @@ const {
   TextInputBuilder,
   TextInputStyle,
   UserSelectMenuBuilder,
+  StringSelectMenuBuilder,
   ChannelType,
   PermissionFlagsBits,
   Events,
   MessageFlags,
 } = require('discord.js');
+
 const Database = require('better-sqlite3');
 const { DateTime } = require('luxon');
 
 // =====================================================
-// CRAFTED SMP STAFF APPLICATION SYSTEM
+// CRAFTED SMP STAFF APPLICATION BOT
 // =====================================================
 
 const GUILD_ID = '1543363950262100118';
@@ -40,7 +42,7 @@ const SENIOR_STAFF_ROLE_ID = '1543367669385011302';
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 
 if (!DISCORD_TOKEN) {
-  console.error('❌ Missing DISCORD_TOKEN environment variable.');
+  console.error('❌ DISCORD_TOKEN is missing.');
   process.exit(1);
 }
 
@@ -60,6 +62,7 @@ const client = new Client({
 // =====================================================
 
 const db = new Database('crafted_staff_applications.db');
+
 db.pragma('journal_mode = WAL');
 
 db.exec(`
@@ -74,9 +77,9 @@ CREATE TABLE IF NOT EXISTS applications (
   mode TEXT NOT NULL,
   age TEXT NOT NULL,
   experience TEXT NOT NULL,
-  interview_ts INTEGER NOT NULL,
-  timezone TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'pending',
+  interview_ts INTEGER NOT NULL DEFAULT 0,
+  timezone TEXT NOT NULL DEFAULT 'PENDING',
+  status TEXT NOT NULL DEFAULT 'choosing_time',
   submission_message_id TEXT,
   interview_text_channel_id TEXT,
   interview_voice_channel_id TEXT,
@@ -129,19 +132,30 @@ CREATE TABLE IF NOT EXISTS test_checks (
 );
 `);
 
+// =====================================================
+// SETTINGS
+// =====================================================
+
 function getSetting(key, fallback = null) {
-  const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
+  const row = db
+    .prepare('SELECT value FROM settings WHERE key = ?')
+    .get(key);
+
   return row ? row.value : fallback;
 }
 
 function setSetting(key, value) {
   db.prepare(`
-    INSERT INTO settings(key, value) VALUES(?, ?)
-    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+    INSERT INTO settings(key, value)
+    VALUES(?, ?)
+    ON CONFLICT(key)
+    DO UPDATE SET value = excluded.value
   `).run(key, String(value));
 }
 
-if (!getSetting('system_mode')) setSetting('system_mode', 'closed');
+if (!getSetting('system_mode')) {
+  setSetting('system_mode', 'closed');
+}
 
 // =====================================================
 // TEST CHECKLIST
@@ -152,18 +166,18 @@ const TEST_CHECKS = [
   ['application_form', 'Application form'],
   ['application_submission', 'Application submission'],
   ['staff_approvals', 'Staff approvals'],
-  ['owner_override', 'Owner/Co-Owner approval override'],
+  ['owner_override', 'Owner/Co-Owner override'],
   ['rescheduling', 'Rescheduling'],
   ['timezone_conversion', 'Time-zone conversion'],
   ['applicant_confirmation', 'Applicant confirmation'],
   ['interview_reminders', 'Interview reminders'],
-  ['private_text_permissions', 'Private text channel permissions'],
-  ['voice_permissions', 'Voice channel permissions'],
+  ['private_text_permissions', 'Private text permissions'],
+  ['voice_permissions', 'Voice permissions'],
   ['random_questions', 'Random question selection'],
   ['scoring', '0–3 scoring'],
-  ['two_interviewer_scoring', 'Two-interviewer scoring'],
+  ['two_interviewer_scoring', 'Two interviewer scoring'],
   ['navigation', 'Previous/Next navigation'],
-  ['restart_persistence', 'Bot restart persistence'],
+  ['restart_persistence', 'Restart persistence'],
   ['score_calculations', 'Score calculations'],
   ['end_interview', 'End Interview'],
   ['final_decision', 'Accept/Reject/Further Review'],
@@ -172,10 +186,18 @@ const TEST_CHECKS = [
 
 function markTestCheck(key) {
   if (!TEST_CHECKS.some(([k]) => k === key)) return;
+
   db.prepare(`
-    INSERT INTO test_checks(check_key, passed, updated_at)
+    INSERT INTO test_checks(
+      check_key,
+      passed,
+      updated_at
+    )
     VALUES(?, 1, ?)
-    ON CONFLICT(check_key) DO UPDATE SET passed = 1, updated_at = excluded.updated_at
+    ON CONFLICT(check_key)
+    DO UPDATE SET
+      passed = 1,
+      updated_at = excluded.updated_at
   `).run(key, Date.now());
 }
 
@@ -184,16 +206,43 @@ function resetTestChecks() {
 }
 
 function checklistText() {
-  const passedRows = db.prepare('SELECT check_key FROM test_checks WHERE passed = 1').all();
-  const passed = new Set(passedRows.map(r => r.check_key));
-  const lines = TEST_CHECKS.map(([key, label]) => `${passed.has(key) ? '✅' : '⬜'} ${label}`);
-  const count = TEST_CHECKS.filter(([key]) => passed.has(key)).length;
-  return `${lines.join('\n')}\n\n**Testing Progress: ${count}/${TEST_CHECKS.length}**${count === TEST_CHECKS.length ? '\n\n✅ **ALL SYSTEMS TESTED**' : ''}`;
+  const rows = db
+    .prepare(`
+      SELECT check_key
+      FROM test_checks
+      WHERE passed = 1
+    `)
+    .all();
+
+  const passed = new Set(
+    rows.map(row => row.check_key)
+  );
+
+  const list = TEST_CHECKS.map(
+    ([key, label]) =>
+      `${passed.has(key) ? '✅' : '⬜'} ${label}`
+  );
+
+  const count = TEST_CHECKS.filter(
+    ([key]) => passed.has(key)
+  ).length;
+
+  return [
+    ...list,
+    '',
+    `**Testing Progress: ${count}/${TEST_CHECKS.length}**`,
+    count === TEST_CHECKS.length
+      ? '✅ **ALL SYSTEMS TESTED**'
+      : '',
+  ].join('\n');
 }
 
 // =====================================================
 // QUESTIONS
-// Only the user's listed questions are used.
+// 3 RANDOM QUESTIONS FROM EACH CATEGORY
+// 3 POINTS EACH
+// 21 QUESTIONS TOTAL
+// 63 POINTS PER INTERVIEWER
 // =====================================================
 
 const QUESTION_CATEGORIES = [
@@ -207,6 +256,7 @@ const QUESTION_CATEGORIES = [
       'Why is professionalism important when moderating a community?',
     ],
   },
+
   {
     name: '🤝 Community & Leadership',
     questions: [
@@ -217,6 +267,7 @@ const QUESTION_CATEGORIES = [
       'Why should the staff team trust you with moderation permissions?',
     ],
   },
+
   {
     name: '⚖️ Rule Enforcement Scenarios',
     questions: [
@@ -226,6 +277,7 @@ const QUESTION_CATEGORIES = [
       'Several players report someone for hacking, but there is no evidence. What steps would you take before making a decision?',
     ],
   },
+
   {
     name: '🔥 Advanced Scenario Questions',
     questions: [
@@ -236,6 +288,7 @@ const QUESTION_CATEGORIES = [
       'You are the only staff member online and multiple issues happen at the same time: a player is spamming, someone reports a hacker, and two players are arguing in chat. How would you prioritize and handle each situation?',
     ],
   },
+
   {
     name: '🧠 Judgment & Decision Making',
     questions: [
@@ -246,6 +299,7 @@ const QUESTION_CATEGORIES = [
       'What would you do if someone accused you of staff abuse?',
     ],
   },
+
   {
     name: '🚨 Serious Staff Scenarios',
     questions: [
@@ -256,11 +310,12 @@ const QUESTION_CATEGORIES = [
       'A player creates multiple alternate accounts to evade punishments. How would you investigate and handle the situation?',
     ],
   },
+
   {
     name: '🎭 Bonus Question (Troll Check)',
     questions: [
       'You are given Owner rank for 5 minutes. What is the very first thing you do?',
-      'As a moderator, you contain a role of leadership and persuasion. Without breaking character, persuade us why ketchup should be a soup.',
+      'As a moderator you contain a role of leadership and persuasion. Without breaking character, persuade us why ketchup should be a soup.',
       'As being persuasive, explain why noodles should be on a pizza.',
       'Explain how coffee can be a type of tea.',
     ],
@@ -268,187 +323,732 @@ const QUESTION_CATEGORIES = [
 ];
 
 function randomThreePerCategory() {
-  const selected = [];
-  QUESTION_CATEGORIES.forEach((category, categoryIndex) => {
-    const indexes = category.questions.map((_, i) => i);
-    for (let i = indexes.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [indexes[i], indexes[j]] = [indexes[j], indexes[i]];
+  const result = [];
+
+  QUESTION_CATEGORIES.forEach(
+    (category, categoryIndex) => {
+      const indexes = category.questions.map(
+        (_, index) => index
+      );
+
+      for (
+        let i = indexes.length - 1;
+        i > 0;
+        i--
+      ) {
+        const random =
+          Math.floor(
+            Math.random() * (i + 1)
+          );
+
+        [
+          indexes[i],
+          indexes[random],
+        ] = [
+          indexes[random],
+          indexes[i],
+        ];
+      }
+
+      indexes
+        .slice(0, 3)
+        .forEach(questionIndex => {
+          result.push({
+            key:
+              `${categoryIndex}:${questionIndex}`,
+
+            categoryIndex,
+
+            questionIndex,
+
+            category:
+              category.name,
+
+            question:
+              category.questions[
+                questionIndex
+              ],
+          });
+        });
     }
-    indexes.slice(0, 3).forEach(questionIndex => {
-      selected.push({
-        key: `${categoryIndex}:${questionIndex}`,
-        categoryIndex,
-        questionIndex,
-        category: category.name,
-        question: category.questions[questionIndex],
-      });
-    });
-  });
-  return selected;
+  );
+
+  return result;
 }
 
 // =====================================================
-// HELPERS
+// TIME / DATE SCROLL PICKERS
 // =====================================================
 
-const TZ_ALIASES = {
-  HST: 'Pacific/Honolulu',
-  HAWAII: 'Pacific/Honolulu',
-  PST: 'America/Los_Angeles',
-  PDT: 'America/Los_Angeles',
-  MST: 'America/Denver',
-  MDT: 'America/Denver',
-  CST: 'America/Chicago',
-  CDT: 'America/Chicago',
-  EST: 'America/New_York',
-  EDT: 'America/New_York',
-  UTC: 'UTC',
-  GMT: 'UTC',
+const DATE_PAGE_SIZE = 14;
+const MAX_DATE_PAGES = 12;
+
+const TIME_OPTIONS = [
+  ['08:00', '8:00 AM'],
+  ['08:30', '8:30 AM'],
+  ['09:00', '9:00 AM'],
+  ['09:30', '9:30 AM'],
+  ['10:00', '10:00 AM'],
+  ['10:30', '10:30 AM'],
+  ['11:00', '11:00 AM'],
+  ['11:30', '11:30 AM'],
+  ['12:00', '12:00 PM'],
+  ['12:30', '12:30 PM'],
+  ['13:00', '1:00 PM'],
+  ['13:30', '1:30 PM'],
+  ['14:00', '2:00 PM'],
+  ['14:30', '2:30 PM'],
+  ['15:00', '3:00 PM'],
+  ['15:30', '3:30 PM'],
+  ['16:00', '4:00 PM'],
+  ['16:30', '4:30 PM'],
+  ['17:00', '5:00 PM'],
+  ['17:30', '5:30 PM'],
+  ['18:00', '6:00 PM'],
+  ['18:30', '6:30 PM'],
+  ['19:00', '7:00 PM'],
+  ['19:30', '7:30 PM'],
+  ['20:00', '8:00 PM'],
+];
+
+const TIMEZONE_OPTIONS = [
+  {
+    label: 'HST — Hawaii',
+    value: 'HST',
+    description:
+      'Hawaii Standard Time',
+  },
+
+  {
+    label: 'PST/PDT — Pacific',
+    value: 'PACIFIC',
+    description:
+      'Pacific Time',
+  },
+
+  {
+    label: 'MST/MDT — Mountain',
+    value: 'MOUNTAIN',
+    description:
+      'Mountain Time',
+  },
+
+  {
+    label: 'CST/CDT — Central',
+    value: 'CENTRAL',
+    description:
+      'Central Time',
+  },
+
+  {
+    label: 'EST/EDT — Eastern',
+    value: 'EASTERN',
+    description:
+      'Eastern Time',
+  },
+];
+
+const TIMEZONE_ZONES = {
+  HST:
+    'Pacific/Honolulu',
+
+  PACIFIC:
+    'America/Los_Angeles',
+
+  MOUNTAIN:
+    'America/Denver',
+
+  CENTRAL:
+    'America/Chicago',
+
+  EASTERN:
+    'America/New_York',
 };
 
-function parseInterviewTime(input) {
-  const parts = input.split('|').map(s => s.trim());
-  if (parts.length !== 2) {
-    return { ok: false, error: 'Use this format: `YYYY-MM-DD HH:MM | Timezone`\nExample: `2026-09-25 16:00 | HST`' };
+function minimumSelectableDate(app) {
+  const today = DateTime
+    .now()
+    .setZone(
+      'Pacific/Honolulu'
+    )
+    .startOf('day');
+
+  if (app.mode === 'real') {
+    return today.plus({
+      days: 7,
+    });
   }
 
-  const [dateTimePart, zoneRaw] = parts;
-  const zone = TZ_ALIASES[zoneRaw.toUpperCase()] || zoneRaw;
-  const dt = DateTime.fromFormat(dateTimePart, 'yyyy-MM-dd HH:mm', { zone });
+  return today;
+}
+
+function buildDatePicker(app, page = 0) {
+  page = Math.max(
+    0,
+    Math.min(
+      MAX_DATE_PAGES - 1,
+      Number(page) || 0
+    )
+  );
+
+  const start =
+    minimumSelectableDate(app)
+      .plus({
+        days:
+          page *
+          DATE_PAGE_SIZE,
+      });
+
+  const options = [];
+
+  for (
+    let i = 0;
+    i < DATE_PAGE_SIZE;
+    i++
+  ) {
+    const date =
+      start.plus({
+        days: i,
+      });
+
+    options.push({
+      label:
+        date.toFormat(
+          'cccc, LLLL d'
+        ),
+
+      description:
+        date.toFormat(
+          'yyyy'
+        ),
+
+      value:
+        date.toISODate(),
+    });
+  }
+
+  const select =
+    new StringSelectMenuBuilder()
+      .setCustomId(
+        `pick_date:${app.id}:${page}`
+      )
+      .setPlaceholder(
+        `Choose date — page ${page + 1}`
+      )
+      .addOptions(
+        options
+      );
+
+  return {
+    content: [
+      '📅 **Choose your interview date**',
+      '',
+      app.mode === 'real'
+        ? 'Only dates at least **7 days from today** are available.'
+        : 'Testing Mode allows today or future dates.',
+      '',
+      'Tap the menu and scroll/swipe through the dates.',
+    ].join('\n'),
+
+    components: [
+      new ActionRowBuilder()
+        .addComponents(
+          select
+        ),
+
+      new ActionRowBuilder()
+        .addComponents(
+          new ButtonBuilder()
+            .setCustomId(
+              `date_page:${app.id}:${page - 1}`
+            )
+            .setLabel(
+              'Previous Dates'
+            )
+            .setEmoji('⬅️')
+            .setStyle(
+              ButtonStyle.Secondary
+            )
+            .setDisabled(
+              page === 0
+            ),
+
+          new ButtonBuilder()
+            .setCustomId(
+              `date_page:${app.id}:${page + 1}`
+            )
+            .setLabel(
+              'Newer Dates'
+            )
+            .setEmoji('➡️')
+            .setStyle(
+              ButtonStyle.Secondary
+            )
+            .setDisabled(
+              page >=
+              MAX_DATE_PAGES - 1
+            )
+        ),
+    ],
+  };
+}
+
+function buildTimePicker(
+  app,
+  dateISO
+) {
+  const select =
+    new StringSelectMenuBuilder()
+      .setCustomId(
+        `pick_time:${app.id}:${dateISO}`
+      )
+      .setPlaceholder(
+        'Choose interview time'
+      )
+      .addOptions(
+        TIME_OPTIONS.map(
+          ([value, label]) => ({
+            label,
+            value,
+          })
+        )
+      );
+
+  return {
+    content: [
+      `📅 **Date:** ${DateTime.fromISO(dateISO).toFormat('cccc, LLLL d, yyyy')}`,
+      '',
+      '🕐 **Choose your interview time**',
+      '',
+      'Tap the menu and scroll/swipe through the times.',
+    ].join('\n'),
+
+    components: [
+      new ActionRowBuilder()
+        .addComponents(
+          select
+        ),
+
+      new ActionRowBuilder()
+        .addComponents(
+          new ButtonBuilder()
+            .setCustomId(
+              `back_to_dates:${app.id}`
+            )
+            .setLabel(
+              'Change Date'
+            )
+            .setEmoji('⬅️')
+            .setStyle(
+              ButtonStyle.Secondary
+            )
+        ),
+    ],
+  };
+}
+
+function buildTimezonePicker(
+  app,
+  dateISO,
+  timeValue
+) {
+  const friendly =
+    TIME_OPTIONS.find(
+      ([value]) =>
+        value === timeValue
+    )?.[1] ||
+    timeValue;
+
+  const select =
+    new StringSelectMenuBuilder()
+      .setCustomId(
+        `pick_timezone:${app.id}:${dateISO}:${timeValue}`
+      )
+      .setPlaceholder(
+        'Choose your time zone'
+      )
+      .addOptions(
+        TIMEZONE_OPTIONS
+      );
+
+  return {
+    content: [
+      `📅 **Date:** ${DateTime.fromISO(dateISO).toFormat('cccc, LLLL d, yyyy')}`,
+      `🕐 **Time:** ${friendly}`,
+      '',
+      '🌎 **Choose your time zone**',
+    ].join('\n'),
+
+    components: [
+      new ActionRowBuilder()
+        .addComponents(
+          select
+        ),
+
+      new ActionRowBuilder()
+        .addComponents(
+          new ButtonBuilder()
+            .setCustomId(
+              `back_to_times:${app.id}:${dateISO}`
+            )
+            .setLabel(
+              'Change Time'
+            )
+            .setEmoji('⬅️')
+            .setStyle(
+              ButtonStyle.Secondary
+            )
+        ),
+    ],
+  };
+}
+
+function selectedDateTimeToUnix(
+  dateISO,
+  timeValue,
+  timezoneValue
+) {
+  const zone =
+    TIMEZONE_ZONES[
+      timezoneValue
+    ];
+
+  if (!zone) {
+    return null;
+  }
+
+  const dt =
+    DateTime.fromISO(
+      `${dateISO}T${timeValue}:00`,
+      {
+        zone,
+      }
+    );
 
   if (!dt.isValid) {
-    return { ok: false, error: 'I could not read that date/time or time zone. Example: `2026-09-25 16:00 | HST`' };
+    return null;
   }
 
   return {
-    ok: true,
-    timestamp: Math.floor(dt.toSeconds()),
-    zone: zoneRaw,
+    timestamp:
+      Math.floor(
+        dt.toSeconds()
+      ),
+
+    timezone:
+      timezoneValue,
   };
 }
 
+// =====================================================
+// GENERAL HELPERS
+// =====================================================
+
 function unixNow() {
-  return Math.floor(Date.now() / 1000);
+  return Math.floor(
+    Date.now() / 1000
+  );
 }
 
 function slugify(name) {
-  return name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 70) || 'applicant';
+  return (
+    name
+      .toLowerCase()
+      .replace(
+        /[^a-z0-9]+/g,
+        '-'
+      )
+      .replace(
+        /^-+|-+$/g,
+        ''
+      )
+      .slice(
+        0,
+        70
+      ) ||
+    'applicant'
+  );
 }
 
 function statusLabel(status) {
-  const map = {
-    pending: '🟡 Pending Review',
-    needs_time: '🟠 Needs Different Time',
-    needs_interviewer: '🟠 Needs Interviewer',
-    confirmed: '🟢 Interview Confirmed',
-    rejected: '🔴 Rejected',
-    in_progress: '🔵 Interview In Progress',
-    completed: '✅ Interview Completed',
-    accepted: '✅ Accepted',
-    further_review: '🟡 Further Review',
-  };
-  return map[status] || status;
-}
+  const statuses = {
+    choosing_time:
+      '📅 Choosing Interview Time',
 
-function isRoleMember(member, roleId) {
-  return Boolean(member?.roles?.cache?.has(roleId));
+    pending:
+      '🟡 Pending Review',
+
+    needs_time:
+      '🟠 Needs Different Time',
+
+    needs_interviewer:
+      '🟠 Needs Interviewer',
+
+    confirmed:
+      '🟢 Interview Confirmed',
+
+    rejected:
+      '🔴 Rejected',
+
+    in_progress:
+      '🔵 Interview In Progress',
+
+    completed:
+      '✅ Interview Completed',
+
+    accepted:
+      '✅ Accepted',
+
+    further_review:
+      '🟡 Further Review',
+  };
+
+  return (
+    statuses[status] ||
+    status
+  );
 }
 
 function isOwner(member) {
-  return isRoleMember(member, OWNER_ROLE_ID);
+  return Boolean(
+    member?.roles?.cache?.has(
+      OWNER_ROLE_ID
+    )
+  );
 }
 
 function isCoOwner(member) {
-  return isRoleMember(member, CO_OWNER_ROLE_ID);
+  return Boolean(
+    member?.roles?.cache?.has(
+      CO_OWNER_ROLE_ID
+    )
+  );
 }
 
 function isSenior(member) {
-  return isRoleMember(member, SENIOR_STAFF_ROLE_ID);
+  return Boolean(
+    member?.roles?.cache?.has(
+      SENIOR_STAFF_ROLE_ID
+    )
+  );
 }
 
-function isAuthorizedStaff(member) {
-  return isOwner(member) || isCoOwner(member) || isSenior(member);
+function isAuthorizedStaff(
+  member
+) {
+  return (
+    isOwner(member) ||
+    isCoOwner(member) ||
+    isSenior(member)
+  );
 }
 
-function isOwnerOrCoOwner(member) {
-  return isOwner(member) || isCoOwner(member);
+function isOwnerOrCoOwner(
+  member
+) {
+  return (
+    isOwner(member) ||
+    isCoOwner(member)
+  );
 }
 
-async function safeEphemeral(interaction, content) {
-  if (interaction.replied || interaction.deferred) {
-    return interaction.followUp({ content, flags: MessageFlags.Ephemeral }).catch(() => null);
+async function safeReply(
+  interaction,
+  content
+) {
+  if (
+    interaction.replied ||
+    interaction.deferred
+  ) {
+    return interaction
+      .followUp({
+        content,
+        flags:
+          MessageFlags.Ephemeral,
+      })
+      .catch(() => null);
   }
-  return interaction.reply({ content, flags: MessageFlags.Ephemeral }).catch(() => null);
+
+  return interaction
+    .reply({
+      content,
+      flags:
+        MessageFlags.Ephemeral,
+    })
+    .catch(() => null);
 }
 
-async function fetchTextChannel(id) {
-  const channel = await client.channels.fetch(id).catch(() => null);
-  return channel?.isTextBased() ? channel : null;
+async function getTextChannel(id) {
+  const channel =
+    await client.channels
+      .fetch(id)
+      .catch(() => null);
+
+  if (
+    !channel ||
+    !channel.isTextBased()
+  ) {
+    return null;
+  }
+
+  return channel;
 }
 
 function getApplication(appId) {
-  return db.prepare('SELECT * FROM applications WHERE id = ?').get(appId);
+  return db
+    .prepare(`
+      SELECT *
+      FROM applications
+      WHERE id = ?
+    `)
+    .get(appId);
 }
 
-function getActiveApplicationForUser(userId, mode) {
-  return db.prepare(`
-    SELECT * FROM applications
-    WHERE user_id = ? AND mode = ?
-      AND status NOT IN ('rejected', 'completed', 'accepted')
-    ORDER BY id DESC LIMIT 1
-  `).get(userId, mode);
-}
-
-function getInterviewers(appId) {
-  return db.prepare('SELECT staff_id FROM interviewers WHERE app_id = ?').all(appId).map(r => r.staff_id);
+function getActiveApplication(
+  userId,
+  mode
+) {
+  return db
+    .prepare(`
+      SELECT *
+      FROM applications
+      WHERE user_id = ?
+        AND mode = ?
+        AND status NOT IN(
+          'rejected',
+          'accepted',
+          'completed'
+        )
+      ORDER BY id DESC
+      LIMIT 1
+    `)
+    .get(
+      userId,
+      mode
+    );
 }
 
 function getApprovals(appId) {
-  return db.prepare('SELECT staff_id FROM approvals WHERE app_id = ? ORDER BY created_at').all(appId).map(r => r.staff_id);
+  return db
+    .prepare(`
+      SELECT staff_id
+      FROM approvals
+      WHERE app_id = ?
+      ORDER BY created_at
+    `)
+    .all(appId)
+    .map(
+      row =>
+        row.staff_id
+    );
 }
 
-function getSelectedQuestions(app) {
+function getInterviewers(
+  appId
+) {
+  return db
+    .prepare(`
+      SELECT staff_id
+      FROM interviewers
+      WHERE app_id = ?
+    `)
+    .all(appId)
+    .map(
+      row =>
+        row.staff_id
+    );
+}
+
+function getQuestions(app) {
   try {
-    return app.selected_questions ? JSON.parse(app.selected_questions) : [];
+    return app.selected_questions
+      ? JSON.parse(
+          app.selected_questions
+        )
+      : [];
   } catch {
     return [];
   }
 }
 
-function saveSelectedQuestions(appId, selected) {
-  db.prepare('UPDATE applications SET selected_questions = ? WHERE id = ?').run(JSON.stringify(selected), appId);
+function saveQuestions(
+  appId,
+  questions
+) {
+  db.prepare(`
+    UPDATE applications
+    SET selected_questions = ?
+    WHERE id = ?
+  `).run(
+    JSON.stringify(
+      questions
+    ),
+    appId
+  );
 }
 
-function staffPermissionOverwrites(guild, applicantId = null, interviewerIds = []) {
-  const overwrites = [
-    { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
-    { id: OWNER_ROLE_ID, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
-    { id: CO_OWNER_ROLE_ID, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
-    { id: SENIOR_STAFF_ROLE_ID, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
+function privateTextPermissions(
+  guild,
+  applicantId = null
+) {
+  const permissions = [
+    {
+      id:
+        guild.roles.everyone.id,
+
+      deny: [
+        PermissionFlagsBits.ViewChannel,
+      ],
+    },
+
+    {
+      id:
+        OWNER_ROLE_ID,
+
+      allow: [
+        PermissionFlagsBits.ViewChannel,
+        PermissionFlagsBits.SendMessages,
+        PermissionFlagsBits.ReadMessageHistory,
+      ],
+    },
+
+    {
+      id:
+        CO_OWNER_ROLE_ID,
+
+      allow: [
+        PermissionFlagsBits.ViewChannel,
+        PermissionFlagsBits.SendMessages,
+        PermissionFlagsBits.ReadMessageHistory,
+      ],
+    },
+
+    {
+      id:
+        SENIOR_STAFF_ROLE_ID,
+
+      allow: [
+        PermissionFlagsBits.ViewChannel,
+        PermissionFlagsBits.SendMessages,
+        PermissionFlagsBits.ReadMessageHistory,
+      ],
+    },
   ];
 
   if (applicantId) {
-    overwrites.push({
-      id: applicantId,
-      allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory],
+    permissions.push({
+      id:
+        applicantId,
+
+      allow: [
+        PermissionFlagsBits.ViewChannel,
+        PermissionFlagsBits.SendMessages,
+        PermissionFlagsBits.ReadMessageHistory,
+      ],
     });
   }
 
-  for (const id of interviewerIds) {
-    if (!overwrites.some(o => o.id === id)) {
-      overwrites.push({
-        id,
-        allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory],
-      });
-    }
-  }
-
-  return overwrites;
+  return permissions;
 }
 
 // =====================================================
@@ -456,157 +1056,419 @@ function staffPermissionOverwrites(guild, applicantId = null, interviewerIds = [
 // =====================================================
 
 function managementEmbed() {
-  const mode = getSetting('system_mode', 'closed');
-  let state = '🔴 Applications Closed';
-  if (mode === 'test') state = '🧪 Testing Mode';
-  if (mode === 'public') state = '🟢 Public Applications Open';
+  const mode =
+    getSetting(
+      'system_mode',
+      'closed'
+    );
+
+  let state =
+    '🔴 Applications Closed';
+
+  if (mode === 'test') {
+    state =
+      '🧪 Testing Mode';
+  }
+
+  if (mode === 'public') {
+    state =
+      '🟢 Public Applications Open';
+  }
 
   return new EmbedBuilder()
-    .setTitle('🛡️ Crafted SMP Staff Application System')
+    .setTitle(
+      '🛡️ Crafted SMP Staff Applications'
+    )
     .setDescription([
-      `**Current Status:** ${state}`,
+      `**Status:** ${state}`,
       '',
-      'Use this panel to test, open, or close the staff application system.',
+      '🧪 Test everything privately first.',
       '',
-      '🧪 **Testing Mode** never counts as a real application.',
-      '🚀 **Public Applications** must be manually enabled by Owner or Co-Owner.',
+      '🚀 Owner or Co-Owner can open real applications after testing.',
     ].join('\n'));
 }
 
-function managementRows() {
+function managementComponents() {
   return [
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId('manage_test_mode').setLabel('Testing Mode').setEmoji('🧪').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId('manage_test_applicant').setLabel('Choose Test Applicant').setEmoji('👤').setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId('manage_checklist').setLabel('Test Checklist').setEmoji('📋').setStyle(ButtonStyle.Secondary),
-    ),
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId('manage_public_open').setLabel('Enable Public Applications').setEmoji('🚀').setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId('manage_close').setLabel('Close Applications').setEmoji('🔴').setStyle(ButtonStyle.Danger),
-      new ButtonBuilder().setCustomId('manage_reset_test').setLabel('Reset Test').setEmoji('🗑️').setStyle(ButtonStyle.Danger),
-    ),
+    new ActionRowBuilder()
+      .addComponents(
+        new ButtonBuilder()
+          .setCustomId(
+            'test_mode'
+          )
+          .setLabel(
+            'Testing Mode'
+          )
+          .setEmoji('🧪')
+          .setStyle(
+            ButtonStyle.Secondary
+          ),
+
+        new ButtonBuilder()
+          .setCustomId(
+            'choose_test_applicant'
+          )
+          .setLabel(
+            'Choose Test Applicant'
+          )
+          .setEmoji('👤')
+          .setStyle(
+            ButtonStyle.Primary
+          ),
+
+        new ButtonBuilder()
+          .setCustomId(
+            'test_checklist'
+          )
+          .setLabel(
+            'Test Checklist'
+          )
+          .setEmoji('📋')
+          .setStyle(
+            ButtonStyle.Secondary
+          )
+      ),
+
+    new ActionRowBuilder()
+      .addComponents(
+        new ButtonBuilder()
+          .setCustomId(
+            'open_public'
+          )
+          .setLabel(
+            'Enable Public Applications'
+          )
+          .setEmoji('🚀')
+          .setStyle(
+            ButtonStyle.Success
+          ),
+
+        new ButtonBuilder()
+          .setCustomId(
+            'close_apps'
+          )
+          .setLabel(
+            'Close Applications'
+          )
+          .setEmoji('🔴')
+          .setStyle(
+            ButtonStyle.Danger
+          ),
+
+        new ButtonBuilder()
+          .setCustomId(
+            'reset_test'
+          )
+          .setLabel(
+            'Reset Test'
+          )
+          .setEmoji('🗑️')
+          .setStyle(
+            ButtonStyle.Danger
+          )
+      ),
   ];
 }
 
 async function ensureManagementPanel() {
-  const channel = await fetchTextChannel(APPLICATION_CONTROL_CHANNEL_ID);
-  if (!channel) throw new Error('Application control channel not found.');
+  const channel =
+    await getTextChannel(
+      APPLICATION_CONTROL_CHANNEL_ID
+    );
 
-  const messages = await channel.messages.fetch({ limit: 50 }).catch(() => null);
-  const existing = messages?.find(m =>
-    m.author.id === client.user.id &&
-    m.components.some(row => row.components.some(c => c.customId === 'manage_test_mode'))
-  );
-
-  if (existing) {
-    await existing.edit({ embeds: [managementEmbed()], components: managementRows() }).catch(() => null);
-    return existing;
+  if (!channel) {
+    throw new Error(
+      'Application control channel not found.'
+    );
   }
 
-  return channel.send({ embeds: [managementEmbed()], components: managementRows() });
-}
+  const messages =
+    await channel.messages
+      .fetch({
+        limit: 30,
+      })
+      .catch(() => null);
 
-async function refreshManagementPanel() {
-  await ensureManagementPanel().catch(console.error);
+  const existing =
+    messages?.find(
+      message =>
+        message.author.id ===
+          client.user.id &&
+        message.components.some(
+          row =>
+            row.components.some(
+              component =>
+                component.customId ===
+                'test_mode'
+            )
+        )
+    );
+
+  if (existing) {
+    await existing.edit({
+      embeds: [
+        managementEmbed(),
+      ],
+
+      components:
+        managementComponents(),
+    });
+
+    return;
+  }
+
+  await channel.send({
+    embeds: [
+      managementEmbed(),
+    ],
+
+    components:
+      managementComponents(),
+  });
 }
 
 // =====================================================
-// PUBLIC / TEST APPLICATION PANELS
+// APPLICATION PANEL
 // =====================================================
 
-function applicationPanelEmbed(isTest = false) {
+function applicationPanelEmbed(
+  testMode
+) {
   return new EmbedBuilder()
-    .setTitle(isTest ? '🧪 Crafted SMP Staff Application — TEST MODE' : '🛡️ Crafted SMP Staff Applications')
+    .setTitle(
+      testMode
+        ? '🧪 TEST Staff Application'
+        : '🛡️ Crafted SMP Staff Application'
+    )
     .setDescription([
-      isTest ? '**This is a test application. It does not count as a real staff application.**' : '**Applications are currently open.**',
+      testMode
+        ? '**This application is only for testing.**'
+        : '**Staff applications are open.**',
+
       '',
-      'Click the button below to apply.',
+
+      '**Application process:**',
+
+      '1️⃣ Enter your age and moderation experience.',
+
+      '2️⃣ Scroll/select your interview date.',
+
+      '3️⃣ Scroll/select your interview time.',
+
+      '4️⃣ Select your time zone.',
+
       '',
-      '**You will be asked for:**',
-      '• Your age',
-      '• Positive moderation experience',
-      '• An interview date, time, and time zone',
+
+      '📱 On mobile you can swipe through the Discord selection list.',
+
       '',
-      'Real interviews must normally be scheduled at least **1 week in advance**.',
+
+      testMode
+        ? '⚡ Staff can also use **Start Test Interview Now**.'
+        : '📅 Real interviews must be at least **7 days in advance**.',
+
       '',
-      '📖 Make sure you prepare and study the Crafted SMP rules before your interview.',
+
+      '📖 Study the Crafted SMP rules before your interview.',
     ].join('\n'));
 }
 
-function applicationButton(isTest = false) {
-  return new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId(isTest ? 'apply_test' : 'apply_public')
-      .setLabel(isTest ? 'Submit Test Application' : 'Apply for Staff')
-      .setEmoji(isTest ? '🧪' : '🛡️')
-      .setStyle(ButtonStyle.Primary)
-  );
+function applyButton(
+  testMode
+) {
+  return new ActionRowBuilder()
+    .addComponents(
+      new ButtonBuilder()
+        .setCustomId(
+          testMode
+            ? 'apply_test'
+            : 'apply_real'
+        )
+        .setLabel(
+          testMode
+            ? 'Submit Test Application'
+            : 'Apply for Staff'
+        )
+        .setEmoji(
+          testMode
+            ? '🧪'
+            : '🛡️'
+        )
+        .setStyle(
+          ButtonStyle.Primary
+        )
+    );
 }
 
-async function createPublicApplicationChannel(guild) {
-  let channelId = getSetting('public_application_channel_id');
-  if (channelId) {
-    const existing = await guild.channels.fetch(channelId).catch(() => null);
-    if (existing) return existing;
+async function createPublicChannel(
+  guild
+) {
+  const oldId =
+    getSetting(
+      'public_channel_id'
+    );
+
+  if (oldId) {
+    const old =
+      await guild.channels
+        .fetch(oldId)
+        .catch(() => null);
+
+    if (old) {
+      return old;
+    }
   }
 
-  const channel = await guild.channels.create({
-    name: 'staff-applications',
-    type: ChannelType.GuildText,
-    parent: MAIN_CATEGORY_ID,
-    permissionOverwrites: [
-      {
-        id: guild.roles.everyone.id,
-        allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory],
-        deny: [PermissionFlagsBits.SendMessages],
-      },
-      {
-        id: client.user.id,
-        allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels],
-      },
+  const channel =
+    await guild.channels.create({
+      name:
+        'staff-applications',
+
+      type:
+        ChannelType.GuildText,
+
+      parent:
+        MAIN_CATEGORY_ID,
+
+      permissionOverwrites: [
+        {
+          id:
+            guild.roles.everyone.id,
+
+          allow: [
+            PermissionFlagsBits.ViewChannel,
+            PermissionFlagsBits.ReadMessageHistory,
+          ],
+
+          deny: [
+            PermissionFlagsBits.SendMessages,
+          ],
+        },
+      ],
+    });
+
+  await channel.send({
+    embeds: [
+      applicationPanelEmbed(
+        false
+      ),
     ],
-    reason: 'Crafted SMP public staff applications opened',
+
+    components: [
+      applyButton(false),
+    ],
   });
 
-  await channel.send({ embeds: [applicationPanelEmbed(false)], components: [applicationButton(false)] });
-  setSetting('public_application_channel_id', channel.id);
+  setSetting(
+    'public_channel_id',
+    channel.id
+  );
+
   return channel;
 }
 
-async function deletePublicApplicationChannel(guild) {
-  const channelId = getSetting('public_application_channel_id');
-  if (!channelId) return;
-  const channel = await guild.channels.fetch(channelId).catch(() => null);
-  if (channel) await channel.delete('Staff applications closed').catch(() => null);
-  setSetting('public_application_channel_id', '');
-}
+async function deletePublicChannel(
+  guild
+) {
+  const id =
+    getSetting(
+      'public_channel_id'
+    );
 
-async function createTestApplicantChannel(guild, userId) {
-  const member = await guild.members.fetch(userId).catch(() => null);
-  if (!member) throw new Error('Test applicant is not in this server.');
+  if (!id) return;
 
-  const oldId = getSetting('test_application_channel_id');
-  if (oldId) {
-    const old = await guild.channels.fetch(oldId).catch(() => null);
-    if (old) await old.delete('Replacing test application channel').catch(() => null);
+  const channel =
+    await guild.channels
+      .fetch(id)
+      .catch(() => null);
+
+  if (channel) {
+    await channel
+      .delete()
+      .catch(() => null);
   }
 
-  const channel = await guild.channels.create({
-    name: `test-application-${slugify(member.user.username)}`,
-    type: ChannelType.GuildText,
-    parent: MAIN_CATEGORY_ID,
-    permissionOverwrites: staffPermissionOverwrites(guild, userId),
-    reason: 'Crafted SMP staff application testing mode',
-  });
+  setSetting(
+    'public_channel_id',
+    ''
+  );
+}
+
+async function createTestChannel(
+  guild,
+  userId
+) {
+  const member =
+    await guild.members
+      .fetch(userId)
+      .catch(() => null);
+
+  if (!member) {
+    throw new Error(
+      'Test applicant was not found.'
+    );
+  }
+
+  const oldId =
+    getSetting(
+      'test_channel_id'
+    );
+
+  if (oldId) {
+    const old =
+      await guild.channels
+        .fetch(oldId)
+        .catch(() => null);
+
+    if (old) {
+      await old
+        .delete()
+        .catch(() => null);
+    }
+  }
+
+  const channel =
+    await guild.channels.create({
+      name:
+        `test-application-${slugify(member.user.username)}`,
+
+      type:
+        ChannelType.GuildText,
+
+      parent:
+        MAIN_CATEGORY_ID,
+
+      permissionOverwrites:
+        privateTextPermissions(
+          guild,
+          userId
+        ),
+    });
 
   await channel.send({
-    content: `<@${userId}>`,
-    embeds: [applicationPanelEmbed(true)],
-    components: [applicationButton(true)],
+    content:
+      `<@${userId}>`,
+
+    embeds: [
+      applicationPanelEmbed(
+        true
+      ),
+    ],
+
+    components: [
+      applyButton(true),
+    ],
   });
 
-  setSetting('test_application_channel_id', channel.id);
-  markTestCheck('application_panel');
+  setSetting(
+    'test_channel_id',
+    channel.id
+  );
+
+  markTestCheck(
+    'application_panel'
+  );
+
   return channel;
 }
 
@@ -614,1003 +1476,3999 @@ async function createTestApplicantChannel(guild, userId) {
 // APPLICATION FORM
 // =====================================================
 
-function buildApplicationModal(mode) {
-  const modal = new ModalBuilder()
-    .setCustomId(`application_modal:${mode}`)
-    .setTitle(mode === 'test' ? 'TEST Staff Application' : 'Staff Application');
+function applicationModal(mode) {
+  const modal =
+    new ModalBuilder()
+      .setCustomId(
+        `application_form:${mode}`
+      )
+      .setTitle(
+        mode === 'test'
+          ? 'TEST Staff Application'
+          : 'Staff Application'
+      );
 
-  const age = new TextInputBuilder()
-    .setCustomId('age')
-    .setLabel('What is your age?')
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true)
-    .setMaxLength(20);
+  const age =
+    new TextInputBuilder()
+      .setCustomId('age')
+      .setLabel(
+        'What is your age?'
+      )
+      .setStyle(
+        TextInputStyle.Short
+      )
+      .setRequired(true)
+      .setMaxLength(20);
 
-  const experience = new TextInputBuilder()
-    .setCustomId('experience')
-    .setLabel('Positive moderation experience')
-    .setStyle(TextInputStyle.Paragraph)
-    .setRequired(true)
-    .setMaxLength(1000);
-
-  const availability = new TextInputBuilder()
-    .setCustomId('availability')
-    .setLabel('Interview: YYYY-MM-DD HH:MM | Timezone')
-    .setPlaceholder('2026-09-25 16:00 | HST')
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true)
-    .setMaxLength(100);
+  const experience =
+    new TextInputBuilder()
+      .setCustomId(
+        'experience'
+      )
+      .setLabel(
+        'Positive moderation experience'
+      )
+      .setStyle(
+        TextInputStyle.Paragraph
+      )
+      .setRequired(true)
+      .setMaxLength(1000);
 
   modal.addComponents(
-    new ActionRowBuilder().addComponents(age),
-    new ActionRowBuilder().addComponents(experience),
-    new ActionRowBuilder().addComponents(availability),
+    new ActionRowBuilder()
+      .addComponents(age),
+
+    new ActionRowBuilder()
+      .addComponents(
+        experience
+      )
   );
 
   return modal;
 }
 
-async function postSubmittedApplication(appId) {
-  const app = getApplication(appId);
-  const channel = await fetchTextChannel(SUBMITTED_APPLICATIONS_CHANNEL_ID);
-  if (!channel) throw new Error('Submitted applications channel not found.');
+// =====================================================
+// POST APPLICATION TO STAFF
+// =====================================================
 
-  const approvals = getApprovals(appId);
-  const interviewers = getInterviewers(appId);
+async function postApplication(
+  appId
+) {
+  const app =
+    getApplication(appId);
 
-  const embed = new EmbedBuilder()
-    .setTitle(app.mode === 'test' ? '🧪 TEST APPLICATION' : '🛡️ Staff Application');
+  if (!app) return;
 
-  if (app.mode === 'test') embed.setDescription('**NOT A REAL APPLICATION**');
+  const channel =
+    await getTextChannel(
+      SUBMITTED_APPLICATIONS_CHANNEL_ID
+    );
 
-  embed.addFields(
-      { name: 'Applicant', value: `<@${app.user_id}>`, inline: true },
-      { name: 'Age', value: app.age, inline: true },
-      { name: 'Status', value: statusLabel(app.status), inline: true },
-      { name: 'Interview Time', value: `<t:${app.interview_ts}:F>\n<t:${app.interview_ts}:R>`, inline: false },
-      { name: 'Time Zone Entered', value: app.timezone, inline: true },
-      { name: 'Moderation Experience', value: app.experience.slice(0, 1024), inline: false },
-      { name: 'Approvals', value: approvals.length ? approvals.map(id => `<@${id}>`).join('\n') : 'None yet', inline: true },
-      { name: 'Interviewers', value: interviewers.length ? interviewers.map(id => `<@${id}>`).join('\n') : 'Not assigned', inline: true },
-    )
-    .setFooter({ text: `Application ID: ${app.id}` });
+  if (!channel) {
+    throw new Error(
+      'Application review channel not found.'
+    );
+  }
 
-  const row1 = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`approve:${app.id}`).setLabel('Approve Interview').setEmoji('✅').setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId(`reschedule_request:${app.id}`).setLabel('Choose Different Time').setEmoji('📅').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`cant_make:${app.id}`).setLabel("Can't Make It").setEmoji('❌').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`assign_interviewers:${app.id}`).setLabel('Assign Interviewers').setEmoji('👥').setStyle(ButtonStyle.Primary),
-  );
+  const approvals =
+    getApprovals(app.id);
 
-  let message;
-  if (app.submission_message_id) {
-    message = await channel.messages.fetch(app.submission_message_id).catch(() => null);
+  const interviewers =
+    getInterviewers(app.id);
+
+  const embed =
+    new EmbedBuilder()
+      .setTitle(
+        app.mode === 'test'
+          ? '🧪 TEST APPLICATION'
+          : '🛡️ Staff Application'
+      )
+      .addFields(
+        {
+          name:
+            'Applicant',
+
+          value:
+            `<@${app.user_id}>`,
+
+          inline:
+            true,
+        },
+
+        {
+          name:
+            'Age',
+
+          value:
+            app.age,
+
+          inline:
+            true,
+        },
+
+        {
+          name:
+            'Status',
+
+          value:
+            statusLabel(
+              app.status
+            ),
+
+          inline:
+            true,
+        },
+
+        {
+          name:
+            'Interview',
+
+          value:
+            app.interview_ts > 0
+              ? `<t:${app.interview_ts}:F>\n<t:${app.interview_ts}:R>`
+              : 'Not selected yet',
+
+          inline:
+            false,
+        },
+
+        {
+          name:
+            'Time Zone',
+
+          value:
+            app.timezone,
+
+          inline:
+            true,
+        },
+
+        {
+          name:
+            'Moderation Experience',
+
+          value:
+            app.experience.slice(
+              0,
+              1024
+            ),
+        },
+
+        {
+          name:
+            'Approvals',
+
+          value:
+            approvals.length
+              ? approvals
+                  .map(
+                    id =>
+                      `<@${id}>`
+                  )
+                  .join('\n')
+              : 'None',
+
+          inline:
+            true,
+        },
+
+        {
+          name:
+            'Interviewers',
+
+          value:
+            interviewers.length
+              ? interviewers
+                  .map(
+                    id =>
+                      `<@${id}>`
+                  )
+                  .join('\n')
+              : 'Not assigned',
+
+          inline:
+            true,
+        }
+      )
+      .setFooter({
+        text:
+          `Application #${app.id}`,
+      });
+
+  if (app.mode === 'test') {
+    embed.setDescription(
+      '🧪 **THIS IS TEST DATA — NOT A REAL APPLICATION**'
+    );
+  }
+
+  const rows = [
+    new ActionRowBuilder()
+      .addComponents(
+        new ButtonBuilder()
+          .setCustomId(
+            `approve:${app.id}`
+          )
+          .setLabel(
+            'Approve Interview'
+          )
+          .setEmoji('✅')
+          .setStyle(
+            ButtonStyle.Success
+          ),
+
+        new ButtonBuilder()
+          .setCustomId(
+            `reschedule:${app.id}`
+          )
+          .setLabel(
+            'Choose Different Time'
+          )
+          .setEmoji('📅')
+          .setStyle(
+            ButtonStyle.Secondary
+          ),
+
+        new ButtonBuilder()
+          .setCustomId(
+            `cant_make:${app.id}`
+          )
+          .setLabel(
+            "Can't Make It"
+          )
+          .setEmoji('❌')
+          .setStyle(
+            ButtonStyle.Secondary
+          ),
+
+        new ButtonBuilder()
+          .setCustomId(
+            `assign:${app.id}`
+          )
+          .setLabel(
+            'Assign Interviewers'
+          )
+          .setEmoji('👥')
+          .setStyle(
+            ButtonStyle.Primary
+          )
+      ),
+  ];
+
+  if (
+    app.mode === 'test' &&
+    ![
+      'in_progress',
+      'completed',
+      'accepted',
+      'rejected',
+    ].includes(app.status)
+  ) {
+    rows.push(
+      new ActionRowBuilder()
+        .addComponents(
+          new ButtonBuilder()
+            .setCustomId(
+              `test_now:${app.id}`
+            )
+            .setLabel(
+              'Start Test Interview Now'
+            )
+            .setEmoji('⚡')
+            .setStyle(
+              ButtonStyle.Danger
+            )
+        )
+    );
+  }
+
+  let message = null;
+
+  if (
+    app.submission_message_id
+  ) {
+    message =
+      await channel.messages
+        .fetch(
+          app.submission_message_id
+        )
+        .catch(() => null);
   }
 
   if (message) {
-    await message.edit({ embeds: [embed], components: [row1] });
+    await message.edit({
+      embeds: [embed],
+      components: rows,
+    });
   } else {
-    message = await channel.send({ embeds: [embed], components: [row1] });
-    db.prepare('UPDATE applications SET submission_message_id = ? WHERE id = ?').run(message.id, app.id);
+    message =
+      await channel.send({
+        embeds: [embed],
+        components: rows,
+      });
+
+    db.prepare(`
+      UPDATE applications
+      SET submission_message_id = ?
+      WHERE id = ?
+    `).run(
+      message.id,
+      app.id
+    );
   }
 }
 
 // =====================================================
-// INTERVIEW CONFIRMATION / CHANNELS
+// FINALIZE DATE/TIME SELECTION
 // =====================================================
 
-async function confirmInterview(appId, guild) {
-  let app = getApplication(appId);
+async function finishSchedule(
+  interaction,
+  app,
+  dateISO,
+  timeValue,
+  timezoneValue
+) {
+  const selected =
+    selectedDateTimeToUnix(
+      dateISO,
+      timeValue,
+      timezoneValue
+    );
+
+  if (!selected) {
+    return safeReply(
+      interaction,
+      '❌ Could not create that interview time.'
+    );
+  }
+
+  if (
+    app.mode === 'real' &&
+    selected.timestamp <
+      unixNow() +
+        7 *
+          24 *
+          60 *
+          60
+  ) {
+    return safeReply(
+      interaction,
+      '❌ Real interviews must be at least 7 days in advance.'
+    );
+  }
+
+  const rescheduling =
+    app.status ===
+    'needs_time';
+
+  db.prepare(`
+    UPDATE applications
+    SET
+      interview_ts = ?,
+      timezone = ?,
+      status = 'pending'
+    WHERE id = ?
+  `).run(
+    selected.timestamp,
+    timezoneValue,
+    app.id
+  );
+
+  if (rescheduling) {
+    db.prepare(`
+      DELETE FROM approvals
+      WHERE app_id = ?
+    `).run(
+      app.id
+    );
+  }
+
+  if (app.mode === 'test') {
+    markTestCheck(
+      'application_submission'
+    );
+
+    markTestCheck(
+      'timezone_conversion'
+    );
+
+    if (rescheduling) {
+      markTestCheck(
+        'rescheduling'
+      );
+    }
+  }
+
+  await postApplication(
+    app.id
+  );
+
+  return interaction.update({
+    content: [
+      '✅ **Interview time selected!**',
+      '',
+      `<t:${selected.timestamp}:F>`,
+      `<t:${selected.timestamp}:R>`,
+      '',
+      'Discord automatically converts this for each person’s local time.',
+      '',
+      '📖 Prepare and study the rules before your interview.',
+    ].join('\n'),
+
+    components: [],
+  });
+}
+
+// =====================================================
+// CONFIRM INTERVIEW
+// =====================================================
+
+async function confirmInterview(
+  appId,
+  guild
+) {
+  let app =
+    getApplication(appId);
+
   if (!app) return;
-  if (['confirmed', 'in_progress', 'completed', 'accepted'].includes(app.status)) return;
 
-  let selected = getSelectedQuestions(app);
-  if (!selected.length) {
-    selected = randomThreePerCategory();
-    saveSelectedQuestions(app.id, selected);
-    if (app.mode === 'test') markTestCheck('random_questions');
+  if (
+    [
+      'confirmed',
+      'in_progress',
+      'completed',
+    ].includes(
+      app.status
+    )
+  ) {
+    return;
   }
 
-  const interviewers = getInterviewers(appId);
-  const member = await guild.members.fetch(app.user_id).catch(() => null);
-  const applicantName = member?.user?.username || `user-${app.user_id}`;
+  let questions =
+    getQuestions(app);
 
-  let textChannel = app.interview_text_channel_id
-    ? await guild.channels.fetch(app.interview_text_channel_id).catch(() => null)
-    : null;
+  if (!questions.length) {
+    questions =
+      randomThreePerCategory();
 
-  if (!textChannel) {
-    textChannel = await guild.channels.create({
-      name: `interview-${slugify(applicantName)}`,
-      type: ChannelType.GuildText,
-      parent: MAIN_CATEGORY_ID,
-      permissionOverwrites: staffPermissionOverwrites(guild, app.user_id, interviewers),
-      reason: `Interview channel for application ${app.id}`,
-    });
+    saveQuestions(
+      app.id,
+      questions
+    );
 
-    db.prepare('UPDATE applications SET interview_text_channel_id = ? WHERE id = ?').run(textChannel.id, app.id);
-    if (app.mode === 'test') markTestCheck('private_text_permissions');
+    if (app.mode === 'test') {
+      markTestCheck(
+        'random_questions'
+      );
+    }
   }
 
-  db.prepare("UPDATE applications SET status = 'confirmed' WHERE id = ?").run(app.id);
-  app = getApplication(app.id);
+  const applicant =
+    await guild.members
+      .fetch(app.user_id)
+      .catch(() => null);
+
+  const username =
+    applicant?.user?.username ||
+    'applicant';
+
+  let channel =
+    app.interview_text_channel_id
+      ? await guild.channels
+          .fetch(
+            app.interview_text_channel_id
+          )
+          .catch(() => null)
+      : null;
+
+  if (!channel) {
+    channel =
+      await guild.channels.create({
+        name:
+          `interview-${slugify(username)}`,
+
+        type:
+          ChannelType.GuildText,
+
+        parent:
+          MAIN_CATEGORY_ID,
+
+        permissionOverwrites:
+          privateTextPermissions(
+            guild,
+            app.user_id
+          ),
+      });
+
+    db.prepare(`
+      UPDATE applications
+      SET interview_text_channel_id = ?
+      WHERE id = ?
+    `).run(
+      channel.id,
+      app.id
+    );
+
+    if (app.mode === 'test') {
+      markTestCheck(
+        'private_text_permissions'
+      );
+    }
+  }
+
+  db.prepare(`
+    UPDATE applications
+    SET status = 'confirmed'
+    WHERE id = ?
+  `).run(app.id);
+
+  app =
+    getApplication(app.id);
+
+  const interviewers =
+    getInterviewers(
+      app.id
+    );
 
   const controls = [
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`start_interview:${app.id}`).setLabel('Start Interview').setEmoji('🎙️').setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId(`end_interview:${app.id}`).setLabel('End Interview').setEmoji('🏁').setStyle(ButtonStyle.Danger),
-    ),
+    new ActionRowBuilder()
+      .addComponents(
+        new ButtonBuilder()
+          .setCustomId(
+            `start_interview:${app.id}`
+          )
+          .setLabel(
+            'Start Interview'
+          )
+          .setEmoji('🎙️')
+          .setStyle(
+            ButtonStyle.Success
+          ),
+
+        new ButtonBuilder()
+          .setCustomId(
+            `end_interview:${app.id}`
+          )
+          .setLabel(
+            'End Interview'
+          )
+          .setEmoji('🏁')
+          .setStyle(
+            ButtonStyle.Danger
+          )
+      ),
   ];
 
   if (app.mode === 'test') {
     controls.push(
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`simulate_reminder:${app.id}:24h`).setLabel('Simulate 24h').setEmoji('🧪').setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId(`simulate_reminder:${app.id}:1h`).setLabel('Simulate 1h').setEmoji('🧪').setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId(`simulate_reminder:${app.id}:10m`).setLabel('Simulate 10m').setEmoji('🧪').setStyle(ButtonStyle.Secondary),
-      )
+      new ActionRowBuilder()
+        .addComponents(
+          new ButtonBuilder()
+            .setCustomId(
+              `reminder:${app.id}:24`
+            )
+            .setLabel(
+              'Simulate 24h'
+            )
+            .setStyle(
+              ButtonStyle.Secondary
+            ),
+
+          new ButtonBuilder()
+            .setCustomId(
+              `reminder:${app.id}:1`
+            )
+            .setLabel(
+              'Simulate 1h'
+            )
+            .setStyle(
+              ButtonStyle.Secondary
+            ),
+
+          new ButtonBuilder()
+            .setCustomId(
+              `reminder:${app.id}:10`
+            )
+            .setLabel(
+              'Simulate 10m'
+            )
+            .setStyle(
+              ButtonStyle.Secondary
+            )
+        )
     );
   }
 
-  await textChannel.send({
-    content: `<@${app.user_id}> ${interviewers.map(id => `<@${id}>`).join(' ')}`,
+  await channel.send({
+    content: [
+      `<@${app.user_id}>`,
+      ...interviewers.map(
+        id =>
+          `<@${id}>`
+      ),
+    ].join(' '),
+
     embeds: [
       new EmbedBuilder()
-        .setTitle(app.mode === 'test' ? '🧪 TEST Interview Confirmed' : '✅ Staff Interview Confirmed')
+        .setTitle(
+          app.mode === 'test'
+            ? '🧪 TEST Interview Confirmed'
+            : '✅ Staff Interview Confirmed'
+        )
         .setDescription([
           `**Applicant:** <@${app.user_id}>`,
-          `**Time:** <t:${app.interview_ts}:F> (<t:${app.interview_ts}:R>)`,
-          `**Interviewers:** ${interviewers.length ? interviewers.map(id => `<@${id}>`).join(', ') : 'Staff assignment pending'}`,
           '',
-          '📖 Make sure you have read and studied the Crafted SMP rules before your interview.',
+          `**Interview:** <t:${app.interview_ts}:F>`,
+          '',
+          `**Interviewers:** ${
+            interviewers.length
+              ? interviewers
+                  .map(
+                    id =>
+                      `<@${id}>`
+                  )
+                  .join(', ')
+              : 'Not assigned'
+          }`,
+          '',
+          '📖 Study the Crafted SMP rules before the interview.',
         ].join('\n')),
     ],
-    components: controls,
+
+    components:
+      controls,
   });
 
-  if (app.mode === 'test') markTestCheck('applicant_confirmation');
+  const user =
+    await client.users
+      .fetch(
+        app.user_id
+      )
+      .catch(() => null);
 
-  const user = await client.users.fetch(app.user_id).catch(() => null);
   if (user) {
-    await user.send({
-      content: [
-        app.mode === 'test' ? '🧪 **TEST INTERVIEW CONFIRMED**' : '✅ **Your Crafted SMP Staff Interview is confirmed!**',
-        `Time: <t:${app.interview_ts}:F> (<t:${app.interview_ts}:R>)`,
-        `Interviewers: ${interviewers.length ? interviewers.map(id => `<@${id}>`).join(', ') : 'Being assigned'}`,
-        'Please study the Crafted SMP rules before your interview.',
-      ].join('\n'),
-    }).catch(() => null);
+    await user
+      .send(
+        [
+          app.mode === 'test'
+            ? '🧪 **TEST Interview Confirmed**'
+            : '✅ **Your Crafted SMP Staff Interview is Confirmed!**',
+
+          '',
+
+          `<t:${app.interview_ts}:F>`,
+
+          '',
+
+          '📖 Study the server rules before the interview.',
+        ].join('\n')
+      )
+      .catch(() => null);
   }
 
-  await postSubmittedApplication(app.id);
+  if (app.mode === 'test') {
+    markTestCheck(
+      'applicant_confirmation'
+    );
+  }
+
+  await postApplication(
+    app.id
+  );
 }
 
 // =====================================================
 // REMINDERS
 // =====================================================
 
-async function sendInterviewReminder(app, key, label) {
-  const channel = await fetchTextChannel(INTERVIEW_NOTIFICATION_CHANNEL_ID);
+async function sendReminder(
+  app,
+  label
+) {
+  const channel =
+    await getTextChannel(
+      INTERVIEW_NOTIFICATION_CHANNEL_ID
+    );
+
   if (!channel) return;
-  const interviewers = getInterviewers(app.id);
+
+  const interviewers =
+    getInterviewers(
+      app.id
+    );
 
   await channel.send({
-    content: interviewers.map(id => `<@${id}>`).join(' '),
+    content:
+      interviewers
+        .map(
+          id =>
+            `<@${id}>`
+        )
+        .join(' '),
+
     embeds: [
       new EmbedBuilder()
-        .setTitle(app.mode === 'test' ? `🧪 TEST Reminder — ${label}` : `⏰ Interview Reminder — ${label}`)
-        .setDescription(`Applicant: <@${app.user_id}>\nInterview: <t:${app.interview_ts}:F> (<t:${app.interview_ts}:R>)`),
+        .setTitle(
+          `⏰ Interview Reminder — ${label}`
+        )
+        .setDescription([
+          `**Applicant:** <@${app.user_id}>`,
+          `**Interview:** <t:${app.interview_ts}:F>`,
+          `**Starts:** <t:${app.interview_ts}:R>`,
+        ].join('\n')),
     ],
   });
 
-  db.prepare('INSERT OR IGNORE INTO reminders(app_id, reminder_key, sent_at) VALUES(?, ?, ?)')
-    .run(app.id, key, Date.now());
-
-  if (app.mode === 'test') markTestCheck('interview_reminders');
+  if (app.mode === 'test') {
+    markTestCheck(
+      'interview_reminders'
+    );
+  }
 }
 
-async function reminderSweep() {
-  const now = unixNow();
-  const apps = db.prepare(`
-    SELECT * FROM applications
-    WHERE mode = 'real' AND status = 'confirmed' AND interview_ts > ?
-  `).all(now - 300);
+async function reminderCheck() {
+  const apps =
+    db.prepare(`
+      SELECT *
+      FROM applications
+      WHERE mode = 'real'
+        AND status = 'confirmed'
+    `).all();
+
+  const now =
+    unixNow();
+
+  const schedules = [
+    {
+      key: '24h',
+      difference:
+        24 * 60 * 60,
+      label:
+        '24 Hours',
+    },
+
+    {
+      key: '1h',
+      difference:
+        60 * 60,
+      label:
+        '1 Hour',
+    },
+
+    {
+      key: '10m',
+      difference:
+        10 * 60,
+      label:
+        '10 Minutes',
+    },
+  ];
 
   for (const app of apps) {
-    const seconds = app.interview_ts - now;
-    const windows = [
-      ['24h', 24 * 3600, '24 Hours'],
-      ['1h', 3600, '1 Hour'],
-      ['10m', 600, '10 Minutes'],
-    ];
+    for (
+      const item
+      of schedules
+    ) {
+      const remaining =
+        app.interview_ts -
+        now;
 
-    for (const [key, threshold, label] of windows) {
-      const already = db.prepare('SELECT 1 FROM reminders WHERE app_id = ? AND reminder_key = ?').get(app.id, key);
-      if (!already && seconds <= threshold && seconds > Math.max(0, threshold - 120)) {
-        await sendInterviewReminder(app, key, label).catch(console.error);
+      if (
+        Math.abs(
+          remaining -
+          item.difference
+        ) > 70
+      ) {
+        continue;
       }
+
+      const already =
+        db.prepare(`
+          SELECT 1
+          FROM reminders
+          WHERE app_id = ?
+            AND reminder_key = ?
+        `).get(
+          app.id,
+          item.key
+        );
+
+      if (already) continue;
+
+      await sendReminder(
+        app,
+        item.label
+      );
+
+      db.prepare(`
+        INSERT INTO reminders(
+          app_id,
+          reminder_key,
+          sent_at
+        )
+        VALUES(?, ?, ?)
+      `).run(
+        app.id,
+        item.key,
+        Date.now()
+      );
     }
   }
 }
 
 // =====================================================
-// SCORING
+// START INTERVIEW
 // =====================================================
 
-function scoringEmbed(app, staffId) {
-  const selected = getSelectedQuestions(app);
-  let session = db.prepare('SELECT * FROM score_sessions WHERE app_id = ? AND staff_id = ?').get(app.id, staffId);
-  if (!session) {
-    db.prepare('INSERT INTO score_sessions(app_id, staff_id, current_index, finished) VALUES(?, ?, 0, 0)').run(app.id, staffId);
-    session = { current_index: 0, finished: 0 };
+async function createScoringChannel(
+  app,
+  guild
+) {
+  let channel =
+    app.scoring_channel_id
+      ? await guild.channels
+          .fetch(
+            app.scoring_channel_id
+          )
+          .catch(() => null)
+      : null;
+
+  if (channel) {
+    return channel;
   }
 
-  const index = Math.max(0, Math.min(session.current_index, selected.length - 1));
-  const item = selected[index];
-  const scoreRow = db.prepare('SELECT score FROM scores WHERE app_id = ? AND staff_id = ? AND question_key = ?')
-    .get(app.id, staffId, item.key);
-  const scoreText = scoreRow ? `${scoreRow.score}/3` : 'Not scored';
-  const categoryPosition = selected.slice(0, index + 1).filter(q => q.categoryIndex === item.categoryIndex).length;
+  const applicant =
+    await guild.members
+      .fetch(
+        app.user_id
+      )
+      .catch(() => null);
 
-  return new EmbedBuilder()
-    .setTitle('🛡️ Crafted SMP Interview Scorecard')
-    .setDescription([
-      `**Applicant:** <@${app.user_id}>`,
-      `**Category:** ${item.category}`,
-      `**Category Question:** ${categoryPosition}/3`,
-      `**Overall Progress:** ${index + 1}/${selected.length}`,
-      '',
-      `### ${item.question}`,
-      '',
-      `**Your Score:** ${scoreText}`,
-      '',
-      '**3/3** — Excellent',
-      '**2/3** — Good',
-      '**1/3** — Weak',
-      '**0/3** — Failed / No Answer',
-    ].join('\n'));
-}
+  channel =
+    await guild.channels.create({
+      name:
+        `score-${slugify(applicant?.user?.username || 'applicant')}`,
 
-function scoringRows(app, staffId) {
-  const selected = getSelectedQuestions(app);
-  const session = db.prepare('SELECT * FROM score_sessions WHERE app_id = ? AND staff_id = ?').get(app.id, staffId) || { current_index: 0 };
-  const index = Math.max(0, Math.min(session.current_index, selected.length - 1));
+      type:
+        ChannelType.GuildText,
 
-  return [
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`score:${app.id}:${index}:0`).setLabel('0/3').setStyle(ButtonStyle.Danger),
-      new ButtonBuilder().setCustomId(`score:${app.id}:${index}:1`).setLabel('1/3').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId(`score:${app.id}:${index}:2`).setLabel('2/3').setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId(`score:${app.id}:${index}:3`).setLabel('3/3').setStyle(ButtonStyle.Success),
-    ),
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`score_prev:${app.id}`).setLabel('Previous').setEmoji('⬅️').setStyle(ButtonStyle.Secondary).setDisabled(index === 0),
-      new ButtonBuilder().setCustomId(`score_next:${app.id}`).setLabel('Next').setEmoji('➡️').setStyle(ButtonStyle.Secondary).setDisabled(index >= selected.length - 1),
-      new ButtonBuilder().setCustomId(`score_finish:${app.id}`).setLabel('Finish My Scoring').setEmoji('✅').setStyle(ButtonStyle.Success),
-    ),
-  ];
-}
+      parent:
+        SENIOR_STAFF_CATEGORY_ID,
 
-function interviewerScore(appId, staffId) {
-  const total = db.prepare('SELECT COALESCE(SUM(score), 0) AS total, COUNT(*) AS count FROM scores WHERE app_id = ? AND staff_id = ?')
-    .get(appId, staffId);
-  return { total: total.total, count: total.count };
-}
+      permissionOverwrites:
+        privateTextPermissions(
+          guild
+        ),
+    });
 
-function allInterviewersFinished(appId) {
-  const interviewers = getInterviewers(appId);
-  if (!interviewers.length) return false;
-  return interviewers.every(id => {
-    const row = db.prepare('SELECT finished FROM score_sessions WHERE app_id = ? AND staff_id = ?').get(appId, id);
-    return row?.finished === 1;
-  });
-}
+  db.prepare(`
+    UPDATE applications
+    SET scoring_channel_id = ?
+    WHERE id = ?
+  `).run(
+    channel.id,
+    app.id
+  );
 
-async function createScoringChannel(app, guild) {
-  let channel = app.scoring_channel_id ? await guild.channels.fetch(app.scoring_channel_id).catch(() => null) : null;
-  if (channel) return channel;
-
-  const member = await guild.members.fetch(app.user_id).catch(() => null);
-  const applicantName = member?.user?.username || `user-${app.user_id}`;
-
-  channel = await guild.channels.create({
-    name: `score-${slugify(applicantName)}`,
-    type: ChannelType.GuildText,
-    parent: SENIOR_STAFF_CATEGORY_ID,
-    permissionOverwrites: staffPermissionOverwrites(guild),
-    reason: `Private scoring for application ${app.id}`,
-  });
-
-  db.prepare('UPDATE applications SET scoring_channel_id = ? WHERE id = ?').run(channel.id, app.id);
-
-  const interviewers = getInterviewers(app.id);
   await channel.send({
-    content: interviewers.map(id => `<@${id}>`).join(' '),
     embeds: [
       new EmbedBuilder()
-        .setTitle('🛡️ Trial Moderator Promotion Board')
+        .setTitle(
+          '🛡️ Trial Moderator Promotion Board'
+        )
         .setDescription([
           `**Applicant:** <@${app.user_id}>`,
-          `**Interviewers:** ${interviewers.map(id => `<@${id}>`).join(', ') || 'Not assigned'}`,
           '',
-          'Welcome to the Moderator Application Process!',
-          'Moderators are expected to be mature, active, respectful, and capable of handling situations professionally.',
+          'Each staff interviewer scores independently.',
           '',
-          'Applicants have about **1 minute per question**. A question not answered, or a long delay, can affect the score.',
-          'This meeting may be recorded/reviewed according to the server’s disclosed interview policy.',
+          '**21 questions total.**',
+          '**3 points per question.**',
+          '**63 maximum points per interviewer.**',
           '',
-          'Each interviewer scores independently. Click **Open My Scorecard** below.',
+          'Click below to open your private scorecard.',
         ].join('\n')),
     ],
+
     components: [
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`open_scorecard:${app.id}`).setLabel('Open My Scorecard').setEmoji('⭐').setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId(`end_interview:${app.id}`).setLabel('End Interview').setEmoji('🏁').setStyle(ButtonStyle.Danger),
-      ),
+      new ActionRowBuilder()
+        .addComponents(
+          new ButtonBuilder()
+            .setCustomId(
+              `scorecard:${app.id}`
+            )
+            .setLabel(
+              'Open My Scorecard'
+            )
+            .setEmoji('⭐')
+            .setStyle(
+              ButtonStyle.Primary
+            ),
+
+          new ButtonBuilder()
+            .setCustomId(
+              `end_interview:${app.id}`
+            )
+            .setLabel(
+              'End Interview'
+            )
+            .setEmoji('🏁')
+            .setStyle(
+              ButtonStyle.Danger
+            )
+        ),
     ],
   });
 
   return channel;
 }
 
-// =====================================================
-// INTERVIEW START / END / RESULTS
-// =====================================================
+async function startInterview(
+  appId,
+  guild,
+  staffId
+) {
+  let app =
+    getApplication(appId);
 
-async function startInterview(appId, guild, starterId) {
-  let app = getApplication(appId);
-  if (!app) throw new Error('Application not found.');
-  if (app.status === 'in_progress') throw new Error('This interview is already in progress.');
-  if (['completed', 'accepted', 'rejected'].includes(app.status)) throw new Error('This interview is already finished.');
-
-  let interviewers = getInterviewers(app.id);
-  if (!interviewers.length) {
-    db.prepare('INSERT OR IGNORE INTO interviewers(app_id, staff_id) VALUES(?, ?)').run(app.id, starterId);
-    interviewers = [starterId];
+  if (!app) {
+    throw new Error(
+      'Application not found.'
+    );
   }
 
-  let selected = getSelectedQuestions(app);
-  if (!selected.length) {
-    selected = randomThreePerCategory();
-    saveSelectedQuestions(app.id, selected);
+  if (
+    app.status ===
+    'in_progress'
+  ) {
+    throw new Error(
+      'Interview already started.'
+    );
   }
 
-  let voice = app.interview_voice_channel_id ? await guild.channels.fetch(app.interview_voice_channel_id).catch(() => null) : null;
-  if (!voice) {
-    const member = await guild.members.fetch(app.user_id).catch(() => null);
-    const applicantName = member?.user?.username || 'applicant';
-    voice = await guild.channels.create({
-      name: `Interview - ${applicantName}`.slice(0, 90),
-      type: ChannelType.GuildVoice,
-      parent: MAIN_CATEGORY_ID,
-      permissionOverwrites: [
-        { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect] },
-        { id: app.user_id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect, PermissionFlagsBits.Speak] },
-        { id: OWNER_ROLE_ID, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect, PermissionFlagsBits.Speak] },
-        { id: CO_OWNER_ROLE_ID, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect, PermissionFlagsBits.Speak] },
-        { id: SENIOR_STAFF_ROLE_ID, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect, PermissionFlagsBits.Speak] },
-      ],
-      reason: `Interview voice channel for application ${app.id}`,
-    });
-    db.prepare('UPDATE applications SET interview_voice_channel_id = ? WHERE id = ?').run(voice.id, app.id);
-    if (app.mode === 'test') markTestCheck('voice_permissions');
-  }
-
-  db.prepare("UPDATE applications SET status = 'in_progress' WHERE id = ?").run(app.id);
-  app = getApplication(app.id);
-  await createScoringChannel(app, guild);
-  await postSubmittedApplication(app.id);
-}
-
-function categoryScoresForStaff(app, staffId) {
-  const selected = getSelectedQuestions(app);
-  return QUESTION_CATEGORIES.map((cat, categoryIndex) => {
-    const categoryQuestions = selected.filter(q => q.categoryIndex === categoryIndex);
-    let total = 0;
-    for (const q of categoryQuestions) {
-      const row = db.prepare('SELECT score FROM scores WHERE app_id = ? AND staff_id = ? AND question_key = ?')
-        .get(app.id, staffId, q.key);
-      total += row?.score || 0;
-    }
-    return { name: cat.name, total, max: 9 };
-  });
-}
-
-async function postResults(appId) {
-  const app = getApplication(appId);
-  const channel = await fetchTextChannel(INTERVIEW_RESULTS_CHANNEL_ID);
-  if (!app || !channel) return;
-
-  const interviewers = getInterviewers(app.id);
-  const staffTotals = interviewers.map(id => ({ id, ...interviewerScore(app.id, id) }));
-  const combined = staffTotals.reduce((sum, s) => sum + s.total, 0);
-  const maxPer = 63;
-  const combinedMax = maxPer * Math.max(interviewers.length, 1);
-  const percent = combinedMax ? (combined / combinedMax) * 100 : 0;
-
-  const fields = [];
-  for (const staff of staffTotals) {
-    fields.push({
-      name: `Interviewer: <@${staff.id}>`,
-      value: `**${staff.total}/${maxPer}** — ${((staff.total / maxPer) * 100).toFixed(1)}%`,
-      inline: false,
-    });
-
-    const cats = categoryScoresForStaff(app, staff.id);
-    fields.push({
-      name: 'Category Scores',
-      value: cats.map(c => `${c.name}: **${c.total}/${c.max}**`).join('\n').slice(0, 1024),
-      inline: false,
-    });
-  }
-
-  fields.push({
-    name: 'Combined Result',
-    value: `**${combined}/${combinedMax}**\n**${percent.toFixed(1)}%**`,
-    inline: false,
-  });
-
-  const embed = new EmbedBuilder()
-    .setTitle(app.mode === 'test' ? '🧪 TEST RESULTS — NOT A REAL APPLICATION' : '🛡️ Crafted SMP Staff Interview Results')
-    .setDescription(`**Applicant:** <@${app.user_id}>\n**Status:** ${statusLabel(app.status)}`)
-    .addFields(fields)
-    .setFooter({ text: `Application ID: ${app.id}` });
-
-  const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`final_accept:${app.id}`).setLabel('Accept Applicant').setEmoji('✅').setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId(`final_reject:${app.id}`).setLabel('Reject Applicant').setEmoji('❌').setStyle(ButtonStyle.Danger),
-    new ButtonBuilder().setCustomId(`final_review:${app.id}`).setLabel('Further Review').setEmoji('🟡').setStyle(ButtonStyle.Secondary),
+  db.prepare(`
+    INSERT OR IGNORE INTO interviewers(
+      app_id,
+      staff_id
+    )
+    VALUES(?, ?)
+  `).run(
+    app.id,
+    staffId
   );
 
-  await channel.send({ embeds: [embed], components: [row] });
-  if (app.mode === 'test') markTestCheck('score_calculations');
-}
+  let questions =
+    getQuestions(app);
 
-async function endInterview(appId, guild) {
-  let app = getApplication(appId);
-  if (!app) throw new Error('Application not found.');
+  if (!questions.length) {
+    questions =
+      randomThreePerCategory();
 
-  if (!allInterviewersFinished(app.id)) {
-    throw new Error('All assigned interviewers must finish their scorecards before ending the interview.');
+    saveQuestions(
+      app.id,
+      questions
+    );
   }
 
-  if (app.interview_voice_channel_id) {
-    const voice = await guild.channels.fetch(app.interview_voice_channel_id).catch(() => null);
-    if (voice) await voice.delete('Interview ended').catch(() => null);
+  const interviewers =
+    getInterviewers(
+      app.id
+    );
+
+  let voice =
+    app.interview_voice_channel_id
+      ? await guild.channels
+          .fetch(
+            app.interview_voice_channel_id
+          )
+          .catch(() => null)
+      : null;
+
+  if (!voice) {
+    const applicant =
+      await guild.members
+        .fetch(
+          app.user_id
+        )
+        .catch(() => null);
+
+    voice =
+      await guild.channels.create({
+        name:
+          `Interview - ${applicant?.user?.username || 'Applicant'}`,
+
+        type:
+          ChannelType.GuildVoice,
+
+        parent:
+          MAIN_CATEGORY_ID,
+
+        permissionOverwrites: [
+          {
+            id:
+              guild.roles.everyone.id,
+
+            deny: [
+              PermissionFlagsBits.ViewChannel,
+              PermissionFlagsBits.Connect,
+            ],
+          },
+
+          {
+            id:
+              app.user_id,
+
+            allow: [
+              PermissionFlagsBits.ViewChannel,
+              PermissionFlagsBits.Connect,
+              PermissionFlagsBits.Speak,
+            ],
+          },
+
+          {
+            id:
+              OWNER_ROLE_ID,
+
+            allow: [
+              PermissionFlagsBits.ViewChannel,
+              PermissionFlagsBits.Connect,
+              PermissionFlagsBits.Speak,
+            ],
+          },
+
+          {
+            id:
+              CO_OWNER_ROLE_ID,
+
+            allow: [
+              PermissionFlagsBits.ViewChannel,
+              PermissionFlagsBits.Connect,
+              PermissionFlagsBits.Speak,
+            ],
+          },
+
+          {
+            id:
+              SENIOR_STAFF_ROLE_ID,
+
+            allow: [
+              PermissionFlagsBits.ViewChannel,
+              PermissionFlagsBits.Connect,
+              PermissionFlagsBits.Speak,
+            ],
+          },
+        ],
+      });
+
+    db.prepare(`
+      UPDATE applications
+      SET interview_voice_channel_id = ?
+      WHERE id = ?
+    `).run(
+      voice.id,
+      app.id
+    );
+
+    if (app.mode === 'test') {
+      markTestCheck(
+        'voice_permissions'
+      );
+    }
   }
 
   db.prepare(`
     UPDATE applications
-    SET status = 'completed', completed_at = ?, interview_voice_channel_id = NULL
+    SET status = 'in_progress'
     WHERE id = ?
-  `).run(Date.now(), app.id);
+  `).run(
+    app.id
+  );
 
-  app = getApplication(app.id);
-  await postSubmittedApplication(app.id);
-  await postResults(app.id);
-  if (app.mode === 'test') markTestCheck('end_interview');
+  app =
+    getApplication(
+      app.id
+    );
+
+  await createScoringChannel(
+    app,
+    guild
+  );
+
+  await postApplication(
+    app.id
+  );
 }
 
 // =====================================================
-// TEST RESET
+// SCORECARD
 // =====================================================
 
-async function resetTestData(guild) {
-  const apps = db.prepare("SELECT * FROM applications WHERE mode = 'test'").all();
+function getScoreSession(
+  appId,
+  staffId
+) {
+  let session =
+    db.prepare(`
+      SELECT *
+      FROM score_sessions
+      WHERE app_id = ?
+        AND staff_id = ?
+    `).get(
+      appId,
+      staffId
+    );
+
+  if (!session) {
+    db.prepare(`
+      INSERT INTO score_sessions(
+        app_id,
+        staff_id,
+        current_index,
+        finished
+      )
+      VALUES(?, ?, 0, 0)
+    `).run(
+      appId,
+      staffId
+    );
+
+    session = {
+      current_index: 0,
+      finished: 0,
+    };
+  }
+
+  return session;
+}
+
+function scorecardEmbed(
+  app,
+  staffId
+) {
+  const questions =
+    getQuestions(app);
+
+  const session =
+    getScoreSession(
+      app.id,
+      staffId
+    );
+
+  const index =
+    Math.max(
+      0,
+      Math.min(
+        questions.length - 1,
+        session.current_index
+      )
+    );
+
+  const question =
+    questions[index];
+
+  if (!question) {
+    return new EmbedBuilder()
+      .setTitle(
+        'No questions available.'
+      );
+  }
+
+  const savedScore =
+    db.prepare(`
+      SELECT score
+      FROM scores
+      WHERE app_id = ?
+        AND staff_id = ?
+        AND question_key = ?
+    `).get(
+      app.id,
+      staffId,
+      question.key
+    );
+
+  const progress =
+    db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM scores
+      WHERE app_id = ?
+        AND staff_id = ?
+    `).get(
+      app.id,
+      staffId
+    );
+
+  return new EmbedBuilder()
+    .setTitle(
+      '⭐ Interview Scorecard'
+    )
+    .setDescription([
+      `**Applicant:** <@${app.user_id}>`,
+      '',
+      `**Category:** ${question.category}`,
+      '',
+      `**Question ${index + 1}/21**`,
+      '',
+      question.question,
+      '',
+      `**Current score:** ${
+        savedScore
+          ? `${savedScore.score}/3`
+          : 'Not scored'
+      }`,
+      '',
+      `**Progress:** ${progress.count}/21`,
+      '',
+      '3/3 = Excellent',
+      '2/3 = Good',
+      '1/3 = Weak',
+      '0/3 = Failed / no answer',
+    ].join('\n'));
+}
+
+function scorecardComponents(
+  app,
+  staffId
+) {
+  const questions =
+    getQuestions(app);
+
+  const session =
+    getScoreSession(
+      app.id,
+      staffId
+    );
+
+  const index =
+    Math.max(
+      0,
+      Math.min(
+        questions.length - 1,
+        session.current_index
+      )
+    );
+
+  return [
+    new ActionRowBuilder()
+      .addComponents(
+        new ButtonBuilder()
+          .setCustomId(
+            `score:${app.id}:${index}:0`
+          )
+          .setLabel('0/3')
+          .setStyle(
+            ButtonStyle.Danger
+          ),
+
+        new ButtonBuilder()
+          .setCustomId(
+            `score:${app.id}:${index}:1`
+          )
+          .setLabel('1/3')
+          .setStyle(
+            ButtonStyle.Secondary
+          ),
+
+        new ButtonBuilder()
+          .setCustomId(
+            `score:${app.id}:${index}:2`
+          )
+          .setLabel('2/3')
+          .setStyle(
+            ButtonStyle.Primary
+          ),
+
+        new ButtonBuilder()
+          .setCustomId(
+            `score:${app.id}:${index}:3`
+          )
+          .setLabel('3/3')
+          .setStyle(
+            ButtonStyle.Success
+          )
+      ),
+
+    new ActionRowBuilder()
+      .addComponents(
+        new ButtonBuilder()
+          .setCustomId(
+            `previous_question:${app.id}`
+          )
+          .setLabel(
+            'Previous'
+          )
+          .setEmoji('⬅️')
+          .setStyle(
+            ButtonStyle.Secondary
+          )
+          .setDisabled(
+            index === 0
+          ),
+
+        new ButtonBuilder()
+          .setCustomId(
+            `next_question:${app.id}`
+          )
+          .setLabel(
+            'Next'
+          )
+          .setEmoji('➡️')
+          .setStyle(
+            ButtonStyle.Secondary
+          )
+          .setDisabled(
+            index >=
+            questions.length - 1
+          ),
+
+        new ButtonBuilder()
+          .setCustomId(
+            `finish_score:${app.id}`
+          )
+          .setLabel(
+            'Finish Scoring'
+          )
+          .setEmoji('✅')
+          .setStyle(
+            ButtonStyle.Success
+          )
+      ),
+  ];
+}
+
+function interviewerTotal(
+  appId,
+  staffId
+) {
+  return db
+    .prepare(`
+      SELECT
+        COALESCE(
+          SUM(score),
+          0
+        ) AS total,
+        COUNT(*) AS count
+      FROM scores
+      WHERE app_id = ?
+        AND staff_id = ?
+    `)
+    .get(
+      appId,
+      staffId
+    );
+}
+
+function allInterviewersFinished(
+  appId
+) {
+  const interviewers =
+    getInterviewers(
+      appId
+    );
+
+  if (!interviewers.length) {
+    return false;
+  }
+
+  return interviewers.every(
+    staffId => {
+      const row =
+        db.prepare(`
+          SELECT finished
+          FROM score_sessions
+          WHERE app_id = ?
+            AND staff_id = ?
+        `).get(
+          appId,
+          staffId
+        );
+
+      return (
+        row?.finished === 1
+      );
+    }
+  );
+}
+
+// =====================================================
+// RESULTS
+// =====================================================
+
+function categoryScores(
+  app,
+  staffId
+) {
+  const questions =
+    getQuestions(app);
+
+  return QUESTION_CATEGORIES.map(
+    (
+      category,
+      categoryIndex
+    ) => {
+      const selected =
+        questions.filter(
+          question =>
+            question.categoryIndex ===
+            categoryIndex
+        );
+
+      let total = 0;
+
+      for (
+        const question
+        of selected
+      ) {
+        const row =
+          db.prepare(`
+            SELECT score
+            FROM scores
+            WHERE app_id = ?
+              AND staff_id = ?
+              AND question_key = ?
+          `).get(
+            app.id,
+            staffId,
+            question.key
+          );
+
+        total +=
+          row?.score || 0;
+      }
+
+      return {
+        name:
+          category.name,
+
+        score:
+          total,
+      };
+    }
+  );
+}
+
+async function postResults(
+  appId
+) {
+  const app =
+    getApplication(
+      appId
+    );
+
+  const channel =
+    await getTextChannel(
+      INTERVIEW_RESULTS_CHANNEL_ID
+    );
+
+  if (
+    !app ||
+    !channel
+  ) {
+    return;
+  }
+
+  const interviewers =
+    getInterviewers(
+      app.id
+    );
+
+  let combined = 0;
+
+  const fields = [];
+
+  for (
+    const staffId
+    of interviewers
+  ) {
+    const total =
+      interviewerTotal(
+        app.id,
+        staffId
+      );
+
+    combined +=
+      total.total;
+
+    fields.push({
+      name:
+        `Interviewer <@${staffId}>`,
+
+      value:
+        `**${total.total}/63** — ${((total.total / 63) * 100).toFixed(1)}%`,
+    });
+
+    fields.push({
+      name:
+        'Category Scores',
+
+      value:
+        categoryScores(
+          app,
+          staffId
+        )
+          .map(
+            item =>
+              `${item.name}: **${item.score}/9**`
+          )
+          .join('\n'),
+    });
+  }
+
+  const combinedMax =
+    63 *
+    Math.max(
+      1,
+      interviewers.length
+    );
+
+  const percentage =
+    combinedMax
+      ? (
+          combined /
+          combinedMax *
+          100
+        ).toFixed(1)
+      : '0.0';
+
+  fields.push({
+    name:
+      'Combined Result',
+
+    value:
+      `**${combined}/${combinedMax}**\n**${percentage}%**`,
+  });
+
+  await channel.send({
+    embeds: [
+      new EmbedBuilder()
+        .setTitle(
+          app.mode === 'test'
+            ? '🧪 TEST RESULTS — NOT REAL'
+            : '🛡️ Crafted SMP Staff Interview Results'
+        )
+        .setDescription(
+          `**Applicant:** <@${app.user_id}>`
+        )
+        .addFields(
+          fields
+        ),
+    ],
+
+    components: [
+      new ActionRowBuilder()
+        .addComponents(
+          new ButtonBuilder()
+            .setCustomId(
+              `accept:${app.id}`
+            )
+            .setLabel(
+              'Accept Applicant'
+            )
+            .setEmoji('✅')
+            .setStyle(
+              ButtonStyle.Success
+            ),
+
+          new ButtonBuilder()
+            .setCustomId(
+              `reject:${app.id}`
+            )
+            .setLabel(
+              'Reject Applicant'
+            )
+            .setEmoji('❌')
+            .setStyle(
+              ButtonStyle.Danger
+            ),
+
+          new ButtonBuilder()
+            .setCustomId(
+              `review:${app.id}`
+            )
+            .setLabel(
+              'Further Review'
+            )
+            .setEmoji('🟡')
+            .setStyle(
+              ButtonStyle.Secondary
+            )
+        ),
+    ],
+  });
+
+  if (app.mode === 'test') {
+    markTestCheck(
+      'score_calculations'
+    );
+  }
+}
+
+// =====================================================
+// END INTERVIEW
+// =====================================================
+
+async function finishInterview(
+  appId,
+  guild
+) {
+  const app =
+    getApplication(
+      appId
+    );
+
+  if (!app) {
+    throw new Error(
+      'Application not found.'
+    );
+  }
+
+  if (
+    !allInterviewersFinished(
+      app.id
+    )
+  ) {
+    throw new Error(
+      'Every assigned interviewer must finish all 21 questions first.'
+    );
+  }
+
+  if (
+    app.interview_voice_channel_id
+  ) {
+    const voice =
+      await guild.channels
+        .fetch(
+          app.interview_voice_channel_id
+        )
+        .catch(() => null);
+
+    if (voice) {
+      await voice
+        .delete()
+        .catch(() => null);
+    }
+  }
+
+  db.prepare(`
+    UPDATE applications
+    SET
+      status = 'completed',
+      completed_at = ?,
+      interview_voice_channel_id = NULL
+    WHERE id = ?
+  `).run(
+    Date.now(),
+    app.id
+  );
+
+  await postApplication(
+    app.id
+  );
+
+  await postResults(
+    app.id
+  );
+
+  if (app.mode === 'test') {
+    markTestCheck(
+      'end_interview'
+    );
+  }
+}
+
+// =====================================================
+// RESET TEST DATA
+// =====================================================
+
+async function resetTestData(
+  guild
+) {
+  const apps =
+    db.prepare(`
+      SELECT *
+      FROM applications
+      WHERE mode = 'test'
+    `).all();
 
   for (const app of apps) {
-    for (const id of [app.interview_text_channel_id, app.interview_voice_channel_id, app.scoring_channel_id]) {
-      if (!id) continue;
-      const channel = await guild.channels.fetch(id).catch(() => null);
-      if (channel) await channel.delete('Resetting Crafted SMP test data').catch(() => null);
+    for (
+      const channelId
+      of [
+        app.interview_text_channel_id,
+        app.interview_voice_channel_id,
+        app.scoring_channel_id,
+      ]
+    ) {
+      if (!channelId) continue;
+
+      const channel =
+        await guild.channels
+          .fetch(
+            channelId
+          )
+          .catch(() => null);
+
+      if (channel) {
+        await channel
+          .delete()
+          .catch(() => null);
+      }
+    }
+
+    db.prepare(`
+      DELETE FROM approvals
+      WHERE app_id = ?
+    `).run(app.id);
+
+    db.prepare(`
+      DELETE FROM interviewers
+      WHERE app_id = ?
+    `).run(app.id);
+
+    db.prepare(`
+      DELETE FROM scores
+      WHERE app_id = ?
+    `).run(app.id);
+
+    db.prepare(`
+      DELETE FROM score_sessions
+      WHERE app_id = ?
+    `).run(app.id);
+
+    db.prepare(`
+      DELETE FROM reminders
+      WHERE app_id = ?
+    `).run(app.id);
+
+    db.prepare(`
+      DELETE FROM applications
+      WHERE id = ?
+    `).run(app.id);
+  }
+
+  const testChannelId =
+    getSetting(
+      'test_channel_id'
+    );
+
+  if (testChannelId) {
+    const channel =
+      await guild.channels
+        .fetch(
+          testChannelId
+        )
+        .catch(() => null);
+
+    if (channel) {
+      await channel
+        .delete()
+        .catch(() => null);
     }
   }
 
-  const testPanelId = getSetting('test_application_channel_id');
-  if (testPanelId) {
-    const channel = await guild.channels.fetch(testPanelId).catch(() => null);
-    if (channel) await channel.delete('Resetting test application panel').catch(() => null);
-  }
+  setSetting(
+    'test_channel_id',
+    ''
+  );
 
-  const ids = apps.map(a => a.id);
-  const tx = db.transaction(() => {
-    for (const id of ids) {
-      db.prepare('DELETE FROM approvals WHERE app_id = ?').run(id);
-      db.prepare('DELETE FROM interviewers WHERE app_id = ?').run(id);
-      db.prepare('DELETE FROM scores WHERE app_id = ?').run(id);
-      db.prepare('DELETE FROM score_sessions WHERE app_id = ?').run(id);
-      db.prepare('DELETE FROM reminders WHERE app_id = ?').run(id);
-      db.prepare('DELETE FROM applications WHERE id = ?').run(id);
-    }
-  });
-  tx();
+  setSetting(
+    'system_mode',
+    'closed'
+  );
 
-  setSetting('test_application_channel_id', '');
-  setSetting('system_mode', 'closed');
-  markTestCheck('test_cleanup');
+  resetTestChecks();
+
+  markTestCheck(
+    'test_cleanup'
+  );
 }
 
 // =====================================================
 // READY
 // =====================================================
 
-client.once(Events.ClientReady, async readyClient => {
-  console.log(`✅ Logged in as ${readyClient.user.tag}`);
+client.once(
+  Events.ClientReady,
+  async readyClient => {
+    console.log(
+      `✅ Logged in as ${readyClient.user.tag}`
+    );
 
-  try {
-    const guild = await client.guilds.fetch(GUILD_ID);
-    await guild.members.fetchMe();
-    await ensureManagementPanel();
+    try {
+      const guild =
+        await client.guilds
+          .fetch(GUILD_ID);
 
-    const inProgressTest = db.prepare("SELECT 1 FROM applications WHERE mode = 'test' AND status = 'in_progress' LIMIT 1").get();
-    if (inProgressTest) markTestCheck('restart_persistence');
+      await ensureManagementPanel();
 
-    setInterval(() => reminderSweep().catch(console.error), 60_000);
-    reminderSweep().catch(console.error);
-  } catch (error) {
-    console.error('❌ Startup error:', error);
+      const interrupted =
+        db.prepare(`
+          SELECT 1
+          FROM applications
+          WHERE mode = 'test'
+            AND status = 'in_progress'
+          LIMIT 1
+        `).get();
+
+      if (interrupted) {
+        markTestCheck(
+          'restart_persistence'
+        );
+      }
+
+      await reminderCheck();
+
+      setInterval(
+        () => {
+          reminderCheck()
+            .catch(console.error);
+        },
+        60_000
+      );
+    } catch (error) {
+      console.error(
+        '❌ Startup error:',
+        error
+      );
+    }
   }
-});
+);
 
 // =====================================================
 // INTERACTIONS
 // =====================================================
 
-client.on(Events.InteractionCreate, async interaction => {
-  try {
-    const guild = interaction.guild || await client.guilds.fetch(GUILD_ID);
-    const member = interaction.member || (interaction.user ? await guild.members.fetch(interaction.user.id).catch(() => null) : null);
+client.on(
+  Events.InteractionCreate,
+  async interaction => {
+    try {
+      const guild =
+        interaction.guild ||
+        await client.guilds
+          .fetch(GUILD_ID);
 
-    // ---------------- Management ----------------
-    if (interaction.isButton() && interaction.customId === 'manage_test_mode') {
-      if (!isAuthorizedStaff(member)) return safeEphemeral(interaction, '❌ Senior Staff, Co-Owner, or Owner only.');
-      await deletePublicApplicationChannel(guild);
-      setSetting('system_mode', 'test');
-      resetTestChecks();
-      await refreshManagementPanel();
-      return safeEphemeral(interaction, '🧪 Testing Mode is now enabled. Use **Choose Test Applicant** next.');
-    }
+      const member =
+        interaction.member ||
+        await guild.members
+          .fetch(
+            interaction.user.id
+          )
+          .catch(() => null);
 
-    if (interaction.isButton() && interaction.customId === 'manage_test_applicant') {
-      if (!isAuthorizedStaff(member)) return safeEphemeral(interaction, '❌ Staff only.');
-      if (getSetting('system_mode') !== 'test') return safeEphemeral(interaction, 'Enable **Testing Mode** first.');
+      // ===============================================
+      // TEST MODE
+      // ===============================================
 
-      const select = new UserSelectMenuBuilder()
-        .setCustomId('select_test_applicant')
-        .setPlaceholder('Choose the test applicant')
-        .setMinValues(1)
-        .setMaxValues(1);
-
-      return interaction.reply({
-        content: 'Choose who should act as the test applicant:',
-        components: [new ActionRowBuilder().addComponents(select)],
-        flags: MessageFlags.Ephemeral,
-      });
-    }
-
-    if (interaction.isUserSelectMenu() && interaction.customId === 'select_test_applicant') {
-      if (!isAuthorizedStaff(member)) return safeEphemeral(interaction, '❌ Staff only.');
-      const userId = interaction.values[0];
-      const channel = await createTestApplicantChannel(guild, userId);
-      return interaction.update({ content: `✅ Test applicant selected: <@${userId}>\nTest channel: ${channel}`, components: [] });
-    }
-
-    if (interaction.isButton() && interaction.customId === 'manage_checklist') {
-      if (!isAuthorizedStaff(member)) return safeEphemeral(interaction, '❌ Staff only.');
-      return interaction.reply({
-        embeds: [new EmbedBuilder().setTitle('📋 Staff Application Test Checklist').setDescription(checklistText())],
-        flags: MessageFlags.Ephemeral,
-      });
-    }
-
-    if (interaction.isButton() && interaction.customId === 'manage_public_open') {
-      if (!isOwnerOrCoOwner(member)) return safeEphemeral(interaction, '❌ Only the Owner or Co-Owner can enable Public Applications.');
-
-      const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('confirm_public_open').setLabel('Yes — Go Public').setEmoji('🚀').setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId('cancel_public_open').setLabel('Cancel').setStyle(ButtonStyle.Secondary),
-      );
-
-      return interaction.reply({
-        content: '⚠️ **PUBLIC RELEASE**\nThis will make the Crafted SMP Staff Application system available to real applicants. Are you sure?',
-        components: [row],
-        flags: MessageFlags.Ephemeral,
-      });
-    }
-
-    if (interaction.isButton() && interaction.customId === 'confirm_public_open') {
-      if (!isOwnerOrCoOwner(member)) return safeEphemeral(interaction, '❌ Owner/Co-Owner only.');
-      const channel = await createPublicApplicationChannel(guild);
-      setSetting('system_mode', 'public');
-      await refreshManagementPanel();
-      return interaction.update({ content: `✅ Public staff applications are now open: ${channel}`, components: [] });
-    }
-
-    if (interaction.isButton() && interaction.customId === 'cancel_public_open') {
-      return interaction.update({ content: 'Cancelled. Public applications remain unchanged.', components: [] });
-    }
-
-    if (interaction.isButton() && interaction.customId === 'manage_close') {
-      if (!isAuthorizedStaff(member)) return safeEphemeral(interaction, '❌ Staff only.');
-      await deletePublicApplicationChannel(guild);
-      setSetting('system_mode', 'closed');
-      await refreshManagementPanel();
-      return safeEphemeral(interaction, '🔴 Applications are now closed. Existing applications were kept.');
-    }
-
-    if (interaction.isButton() && interaction.customId === 'manage_reset_test') {
-      if (!isAuthorizedStaff(member)) return safeEphemeral(interaction, '❌ Staff only.');
-      const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('confirm_reset_test').setLabel('Reset Test').setEmoji('✅').setStyle(ButtonStyle.Danger),
-        new ButtonBuilder().setCustomId('cancel_reset_test').setLabel('Cancel').setEmoji('❌').setStyle(ButtonStyle.Secondary),
-      );
-      return interaction.reply({
-        content: '⚠️ Are you sure you want to delete all **TEST** data? Real application data will not be affected.',
-        components: [row],
-        flags: MessageFlags.Ephemeral,
-      });
-    }
-
-    if (interaction.isButton() && interaction.customId === 'confirm_reset_test') {
-      if (!isAuthorizedStaff(member)) return safeEphemeral(interaction, '❌ Staff only.');
-      await interaction.deferUpdate();
-      await resetTestData(guild);
-      await refreshManagementPanel();
-      return interaction.editReply({ content: '✅ Test data was reset. Real applications were not touched.', components: [] });
-    }
-
-    if (interaction.isButton() && interaction.customId === 'cancel_reset_test') {
-      return interaction.update({ content: 'Test reset cancelled.', components: [] });
-    }
-
-    // ---------------- Apply ----------------
-    if (interaction.isButton() && (interaction.customId === 'apply_test' || interaction.customId === 'apply_public')) {
-      const mode = interaction.customId === 'apply_test' ? 'test' : 'real';
-      if (mode === 'test' && getSetting('system_mode') !== 'test') return safeEphemeral(interaction, 'Testing Mode is not currently enabled.');
-      if (mode === 'real' && getSetting('system_mode') !== 'public') return safeEphemeral(interaction, 'Public staff applications are currently closed.');
-
-      const active = getActiveApplicationForUser(interaction.user.id, mode);
-      if (active) return safeEphemeral(interaction, `You already have an active ${mode === 'test' ? 'test ' : ''}application (ID ${active.id}).`);
-
-      if (mode === 'test') markTestCheck('application_form');
-      return interaction.showModal(buildApplicationModal(mode));
-    }
-
-    if (interaction.isModalSubmit() && interaction.customId.startsWith('application_modal:')) {
-      const mode = interaction.customId.split(':')[1];
-      const age = interaction.fields.getTextInputValue('age').trim();
-      const experience = interaction.fields.getTextInputValue('experience').trim();
-      const availability = interaction.fields.getTextInputValue('availability').trim();
-      const parsed = parseInterviewTime(availability);
-
-      if (!parsed.ok) return safeEphemeral(interaction, `❌ ${parsed.error}`);
-      if (mode === 'real' && parsed.timestamp < unixNow() + (7 * 24 * 3600)) {
-        return safeEphemeral(interaction, '❌ Real interviews must normally be scheduled at least **1 week in advance**. Please choose a later date.');
-      }
-
-      const result = db.prepare(`
-        INSERT INTO applications(user_id, mode, age, experience, interview_ts, timezone, status, created_at)
-        VALUES(?, ?, ?, ?, ?, ?, 'pending', ?)
-      `).run(interaction.user.id, mode, age, experience, parsed.timestamp, parsed.zone, Date.now());
-
-      if (mode === 'test') {
-        markTestCheck('application_submission');
-        markTestCheck('timezone_conversion');
-      }
-
-      await postSubmittedApplication(result.lastInsertRowid);
-      return interaction.reply({
-        content: `${mode === 'test' ? '🧪 **TEST APPLICATION SUBMITTED**' : '✅ **Application submitted!**'}\nInterview request: <t:${parsed.timestamp}:F> (<t:${parsed.timestamp}:R>)\n\n📖 Make sure you prepare and study the Crafted SMP rules.`,
-        flags: MessageFlags.Ephemeral,
-      });
-    }
-
-    // ---------------- Approval ----------------
-    if (interaction.isButton() && interaction.customId.startsWith('approve:')) {
-      if (!isAuthorizedStaff(member)) return safeEphemeral(interaction, '❌ Staff only.');
-      const appId = Number(interaction.customId.split(':')[1]);
-      const app = getApplication(appId);
-      if (!app) return safeEphemeral(interaction, 'Application not found.');
-
-      const existing = db.prepare('SELECT 1 FROM approvals WHERE app_id = ? AND staff_id = ?').get(appId, interaction.user.id);
-      if (existing) return safeEphemeral(interaction, 'You already approved this interview.');
-
-      db.prepare('INSERT INTO approvals(app_id, staff_id, created_at) VALUES(?, ?, ?)').run(appId, interaction.user.id, Date.now());
-      db.prepare('INSERT OR IGNORE INTO interviewers(app_id, staff_id) VALUES(?, ?)').run(appId, interaction.user.id);
-
-      const approvals = getApprovals(appId);
-      let ownerOverride = false;
-      for (const staffId of approvals) {
-        const staffMember = await guild.members.fetch(staffId).catch(() => null);
-        if (staffMember && isOwnerOrCoOwner(staffMember)) {
-          ownerOverride = true;
-          break;
+      if (
+        interaction.isButton() &&
+        interaction.customId ===
+          'test_mode'
+      ) {
+        if (
+          !isAuthorizedStaff(
+            member
+          )
+        ) {
+          return safeReply(
+            interaction,
+            '❌ Staff only.'
+          );
         }
+
+        await deletePublicChannel(
+          guild
+        );
+
+        setSetting(
+          'system_mode',
+          'test'
+        );
+
+        resetTestChecks();
+
+        await ensureManagementPanel();
+
+        return safeReply(
+          interaction,
+          '🧪 Testing Mode is enabled. Next click **Choose Test Applicant**.'
+        );
       }
 
-      if (app.mode === 'test') {
-        markTestCheck('staff_approvals');
-        if (ownerOverride) markTestCheck('owner_override');
+      // ===============================================
+      // CHOOSE TEST APPLICANT
+      // ===============================================
+
+      if (
+        interaction.isButton() &&
+        interaction.customId ===
+          'choose_test_applicant'
+      ) {
+        if (
+          !isAuthorizedStaff(
+            member
+          )
+        ) {
+          return safeReply(
+            interaction,
+            '❌ Staff only.'
+          );
+        }
+
+        if (
+          getSetting(
+            'system_mode'
+          ) !== 'test'
+        ) {
+          return safeReply(
+            interaction,
+            'Enable Testing Mode first.'
+          );
+        }
+
+        const select =
+          new UserSelectMenuBuilder()
+            .setCustomId(
+              'test_applicant_select'
+            )
+            .setPlaceholder(
+              'Choose test applicant'
+            )
+            .setMinValues(1)
+            .setMaxValues(1);
+
+        return interaction.reply({
+          content:
+            'Choose the test applicant:',
+
+          components: [
+            new ActionRowBuilder()
+              .addComponents(
+                select
+              ),
+          ],
+
+          flags:
+            MessageFlags.Ephemeral,
+        });
       }
 
-      await postSubmittedApplication(appId);
+      if (
+        interaction.isUserSelectMenu() &&
+        interaction.customId ===
+          'test_applicant_select'
+      ) {
+        const userId =
+          interaction.values[0];
 
-      if (ownerOverride || approvals.length >= 2) {
-        await confirmInterview(appId, guild);
-        return safeEphemeral(interaction, '✅ Interview approved and confirmed.');
+        const channel =
+          await createTestChannel(
+            guild,
+            userId
+          );
+
+        return interaction.update({
+          content:
+            `✅ Test applicant: <@${userId}>\n${channel}`,
+
+          components: [],
+        });
       }
 
-      return safeEphemeral(interaction, `✅ Your approval was recorded. **${approvals.length}/2** Senior Staff approvals received.`);
-    }
+      // ===============================================
+      // CHECKLIST
+      // ===============================================
 
-    // ---------------- Assign interviewers ----------------
-    if (interaction.isButton() && interaction.customId.startsWith('assign_interviewers:')) {
-      if (!isAuthorizedStaff(member)) return safeEphemeral(interaction, '❌ Staff only.');
-      const appId = Number(interaction.customId.split(':')[1]);
-      const select = new UserSelectMenuBuilder()
-        .setCustomId(`assign_select:${appId}`)
-        .setPlaceholder('Select 1 or 2 interviewers')
-        .setMinValues(1)
-        .setMaxValues(2);
-      return interaction.reply({ content: 'Select the staff members who will conduct this interview:', components: [new ActionRowBuilder().addComponents(select)], flags: MessageFlags.Ephemeral });
-    }
+      if (
+        interaction.isButton() &&
+        interaction.customId ===
+          'test_checklist'
+      ) {
+        if (
+          !isAuthorizedStaff(
+            member
+          )
+        ) {
+          return safeReply(
+            interaction,
+            '❌ Staff only.'
+          );
+        }
 
-    if (interaction.isUserSelectMenu() && interaction.customId.startsWith('assign_select:')) {
-      if (!isAuthorizedStaff(member)) return safeEphemeral(interaction, '❌ Staff only.');
-      const appId = Number(interaction.customId.split(':')[1]);
-      const valid = [];
-      for (const id of interaction.values) {
-        const selectedMember = await guild.members.fetch(id).catch(() => null);
-        if (selectedMember && isAuthorizedStaff(selectedMember)) valid.push(id);
-      }
-      if (!valid.length) return interaction.update({ content: '❌ None of the selected users have Owner, Co-Owner, or Senior Staff.', components: [] });
+        return interaction.reply({
+          embeds: [
+            new EmbedBuilder()
+              .setTitle(
+                '📋 Test Checklist'
+              )
+              .setDescription(
+                checklistText()
+              ),
+          ],
 
-      db.prepare('DELETE FROM interviewers WHERE app_id = ?').run(appId);
-      for (const id of valid) db.prepare('INSERT INTO interviewers(app_id, staff_id) VALUES(?, ?)').run(appId, id);
-      await postSubmittedApplication(appId);
-      return interaction.update({ content: `✅ Interviewers assigned: ${valid.map(id => `<@${id}>`).join(', ')}`, components: [] });
-    }
-
-    // ---------------- Rescheduling ----------------
-    if (interaction.isButton() && interaction.customId.startsWith('reschedule_request:')) {
-      if (!isAuthorizedStaff(member)) return safeEphemeral(interaction, '❌ Staff only.');
-      const appId = Number(interaction.customId.split(':')[1]);
-      const app = getApplication(appId);
-      if (!app) return safeEphemeral(interaction, 'Application not found.');
-      db.prepare("UPDATE applications SET status = 'needs_time' WHERE id = ?").run(appId);
-      await postSubmittedApplication(appId);
-
-      const user = await client.users.fetch(app.user_id).catch(() => null);
-      if (user) {
-        await user.send({
-          content: '📅 Staff cannot make your requested interview time. Please choose a different time.',
-          components: [new ActionRowBuilder().addComponents(
-            new ButtonBuilder().setCustomId(`applicant_reschedule:${app.id}`).setLabel('Choose New Time').setEmoji('📅').setStyle(ButtonStyle.Primary)
-          )],
-        }).catch(() => null);
-      }
-      if (app.mode === 'test') markTestCheck('rescheduling');
-      return safeEphemeral(interaction, '📅 The applicant was asked to choose a different time.');
-    }
-
-    if (interaction.isButton() && interaction.customId.startsWith('applicant_reschedule:')) {
-      const appId = Number(interaction.customId.split(':')[1]);
-      const app = getApplication(appId);
-      if (!app || app.user_id !== interaction.user.id) return safeEphemeral(interaction, 'This reschedule button is not for you.');
-
-      const modal = new ModalBuilder().setCustomId(`reschedule_modal:${appId}`).setTitle('Choose a New Interview Time');
-      const input = new TextInputBuilder()
-        .setCustomId('availability')
-        .setLabel('YYYY-MM-DD HH:MM | Timezone')
-        .setPlaceholder('2026-09-25 16:00 | HST')
-        .setStyle(TextInputStyle.Short)
-        .setRequired(true);
-      modal.addComponents(new ActionRowBuilder().addComponents(input));
-      return interaction.showModal(modal);
-    }
-
-    if (interaction.isModalSubmit() && interaction.customId.startsWith('reschedule_modal:')) {
-      const appId = Number(interaction.customId.split(':')[1]);
-      const app = getApplication(appId);
-      if (!app || app.user_id !== interaction.user.id) return safeEphemeral(interaction, 'Application not found.');
-      const parsed = parseInterviewTime(interaction.fields.getTextInputValue('availability').trim());
-      if (!parsed.ok) return safeEphemeral(interaction, `❌ ${parsed.error}`);
-      if (app.mode === 'real' && parsed.timestamp < unixNow() + (7 * 24 * 3600)) {
-        return safeEphemeral(interaction, '❌ Please choose a time at least 1 week in advance.');
+          flags:
+            MessageFlags.Ephemeral,
+        });
       }
 
-      db.prepare("UPDATE applications SET interview_ts = ?, timezone = ?, status = 'pending' WHERE id = ?")
-        .run(parsed.timestamp, parsed.zone, appId);
-      db.prepare('DELETE FROM approvals WHERE app_id = ?').run(appId);
-      await postSubmittedApplication(appId);
-      return interaction.reply({ content: `✅ New interview request: <t:${parsed.timestamp}:F>`, flags: MessageFlags.Ephemeral });
-    }
+      // ===============================================
+      // OPEN PUBLIC
+      // ===============================================
 
-    // ---------------- Can't make it ----------------
-    if (interaction.isButton() && interaction.customId.startsWith('cant_make:')) {
-      if (!isAuthorizedStaff(member)) return safeEphemeral(interaction, '❌ Staff only.');
-      const appId = Number(interaction.customId.split(':')[1]);
-      const result = db.prepare('DELETE FROM interviewers WHERE app_id = ? AND staff_id = ?').run(appId, interaction.user.id);
-      if (!result.changes) return safeEphemeral(interaction, 'You were not assigned as an interviewer for this application.');
-      db.prepare("UPDATE applications SET status = 'needs_interviewer' WHERE id = ?").run(appId);
-      await postSubmittedApplication(appId);
-      return safeEphemeral(interaction, '✅ You were removed as an interviewer. Another staff member can now be assigned.');
-    }
+      if (
+        interaction.isButton() &&
+        interaction.customId ===
+          'open_public'
+      ) {
+        if (
+          !isOwnerOrCoOwner(
+            member
+          )
+        ) {
+          return safeReply(
+            interaction,
+            '❌ Owner or Co-Owner only.'
+          );
+        }
 
-    // ---------------- Test reminders ----------------
-    if (interaction.isButton() && interaction.customId.startsWith('simulate_reminder:')) {
-      if (!isAuthorizedStaff(member)) return safeEphemeral(interaction, '❌ Staff only.');
-      const [, appIdRaw, key] = interaction.customId.split(':');
-      const app = getApplication(Number(appIdRaw));
-      if (!app || app.mode !== 'test') return safeEphemeral(interaction, 'This is only available for test applications.');
-      const labels = { '24h': '24 Hours', '1h': '1 Hour', '10m': '10 Minutes' };
-      await sendInterviewReminder(app, `test-${key}-${Date.now()}`, labels[key] || key);
-      return safeEphemeral(interaction, `🧪 Simulated the ${labels[key] || key} reminder.`);
-    }
+        return interaction.reply({
+          content:
+            '⚠️ **PUBLIC RELEASE**\nAre you sure you want to open real staff applications?',
 
-    // ---------------- Start interview ----------------
-    if (interaction.isButton() && interaction.customId.startsWith('start_interview:')) {
-      if (!isAuthorizedStaff(member)) return safeEphemeral(interaction, '❌ Staff only.');
-      const appId = Number(interaction.customId.split(':')[1]);
-      const interviewers = getInterviewers(appId);
-      if (interviewers.length && !interviewers.includes(interaction.user.id) && !isOwnerOrCoOwner(member)) {
-        return safeEphemeral(interaction, '❌ Only an assigned interviewer, Owner, or Co-Owner can start this interview.');
-      }
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      await startInterview(appId, guild, interaction.user.id);
-      return interaction.editReply('🎙️ Interview started. The private voice channel and staff scoring channel are ready.');
-    }
+          components: [
+            new ActionRowBuilder()
+              .addComponents(
+                new ButtonBuilder()
+                  .setCustomId(
+                    'confirm_public'
+                  )
+                  .setLabel(
+                    'Yes — Go Public'
+                  )
+                  .setEmoji('🚀')
+                  .setStyle(
+                    ButtonStyle.Success
+                  ),
 
-    // ---------------- Scorecard ----------------
-    if (interaction.isButton() && interaction.customId.startsWith('open_scorecard:')) {
-      const appId = Number(interaction.customId.split(':')[1]);
-      const app = getApplication(appId);
-      if (!app) return safeEphemeral(interaction, 'Application not found.');
-      const interviewers = getInterviewers(appId);
-      if (!interviewers.includes(interaction.user.id) && !isOwnerOrCoOwner(member)) return safeEphemeral(interaction, '❌ You are not an assigned interviewer.');
-      if (!interviewers.includes(interaction.user.id)) db.prepare('INSERT OR IGNORE INTO interviewers(app_id, staff_id) VALUES(?, ?)').run(appId, interaction.user.id);
+                new ButtonBuilder()
+                  .setCustomId(
+                    'cancel_public'
+                  )
+                  .setLabel(
+                    'Cancel'
+                  )
+                  .setStyle(
+                    ButtonStyle.Secondary
+                  )
+              ),
+          ],
 
-      return interaction.reply({ embeds: [scoringEmbed(app, interaction.user.id)], components: scoringRows(app, interaction.user.id), flags: MessageFlags.Ephemeral });
-    }
-
-    if (interaction.isButton() && interaction.customId.startsWith('score:')) {
-      const [, appIdRaw, indexRaw, scoreRaw] = interaction.customId.split(':');
-      const appId = Number(appIdRaw);
-      const index = Number(indexRaw);
-      const score = Number(scoreRaw);
-      const app = getApplication(appId);
-      const selected = app ? getSelectedQuestions(app) : [];
-      const interviewers = getInterviewers(appId);
-      if (!app || !selected[index]) return safeEphemeral(interaction, 'Question not found.');
-      if (!interviewers.includes(interaction.user.id)) return safeEphemeral(interaction, '❌ You are not an assigned interviewer.');
-
-      db.prepare(`
-        INSERT INTO scores(app_id, staff_id, question_key, score)
-        VALUES(?, ?, ?, ?)
-        ON CONFLICT(app_id, staff_id, question_key) DO UPDATE SET score = excluded.score
-      `).run(appId, interaction.user.id, selected[index].key, score);
-
-      db.prepare(`
-        INSERT INTO score_sessions(app_id, staff_id, current_index, finished)
-        VALUES(?, ?, ?, 0)
-        ON CONFLICT(app_id, staff_id) DO UPDATE SET current_index = excluded.current_index
-      `).run(appId, interaction.user.id, index);
-
-      if (app.mode === 'test') markTestCheck('scoring');
-      return interaction.update({ embeds: [scoringEmbed(app, interaction.user.id)], components: scoringRows(app, interaction.user.id) });
-    }
-
-    if (interaction.isButton() && (interaction.customId.startsWith('score_prev:') || interaction.customId.startsWith('score_next:'))) {
-      const appId = Number(interaction.customId.split(':')[1]);
-      const app = getApplication(appId);
-      if (!app) return safeEphemeral(interaction, 'Application not found.');
-      const interviewers = getInterviewers(appId);
-      if (!interviewers.includes(interaction.user.id)) return safeEphemeral(interaction, '❌ You are not an assigned interviewer.');
-
-      let session = db.prepare('SELECT * FROM score_sessions WHERE app_id = ? AND staff_id = ?').get(appId, interaction.user.id);
-      if (!session) {
-        db.prepare('INSERT INTO score_sessions(app_id, staff_id, current_index, finished) VALUES(?, ?, 0, 0)').run(appId, interaction.user.id);
-        session = { current_index: 0 };
-      }
-      const selected = getSelectedQuestions(app);
-      const delta = interaction.customId.startsWith('score_next:') ? 1 : -1;
-      const nextIndex = Math.max(0, Math.min(selected.length - 1, session.current_index + delta));
-      db.prepare('UPDATE score_sessions SET current_index = ? WHERE app_id = ? AND staff_id = ?').run(nextIndex, appId, interaction.user.id);
-      if (app.mode === 'test') markTestCheck('navigation');
-      return interaction.update({ embeds: [scoringEmbed(app, interaction.user.id)], components: scoringRows(app, interaction.user.id) });
-    }
-
-    if (interaction.isButton() && interaction.customId.startsWith('score_finish:')) {
-      const appId = Number(interaction.customId.split(':')[1]);
-      const app = getApplication(appId);
-      if (!app) return safeEphemeral(interaction, 'Application not found.');
-      const interviewers = getInterviewers(appId);
-      if (!interviewers.includes(interaction.user.id)) return safeEphemeral(interaction, '❌ You are not an assigned interviewer.');
-      const total = interviewerScore(appId, interaction.user.id);
-      if (total.count !== 21) return safeEphemeral(interaction, `❌ You have only scored **${total.count}/21** questions. Score every question first.`);
-
-      db.prepare(`
-        INSERT INTO score_sessions(app_id, staff_id, current_index, finished)
-        VALUES(?, ?, 20, 1)
-        ON CONFLICT(app_id, staff_id) DO UPDATE SET finished = 1
-      `).run(appId, interaction.user.id);
-
-      if (app.mode === 'test' && interviewers.length >= 2) {
-        const completed = interviewers.filter(id => db.prepare('SELECT finished FROM score_sessions WHERE app_id = ? AND staff_id = ?').get(appId, id)?.finished === 1);
-        if (completed.length >= 2) markTestCheck('two_interviewer_scoring');
+          flags:
+            MessageFlags.Ephemeral,
+        });
       }
 
-      return interaction.update({
-        content: `✅ Your scorecard is finished. Final score: **${total.total}/63** (${((total.total / 63) * 100).toFixed(1)}%)`,
-        embeds: [],
-        components: [],
-      });
-    }
+      if (
+        interaction.isButton() &&
+        interaction.customId ===
+          'confirm_public'
+      ) {
+        if (
+          !isOwnerOrCoOwner(
+            member
+          )
+        ) {
+          return safeReply(
+            interaction,
+            '❌ Owner or Co-Owner only.'
+          );
+        }
 
-    // ---------------- End interview ----------------
-    if (interaction.isButton() && interaction.customId.startsWith('end_interview:')) {
-      if (!isAuthorizedStaff(member)) return safeEphemeral(interaction, '❌ Staff only.');
-      const appId = Number(interaction.customId.split(':')[1]);
-      const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`confirm_end:${appId}`).setLabel('Yes — End Interview').setStyle(ButtonStyle.Danger),
-        new ButtonBuilder().setCustomId(`cancel_end:${appId}`).setLabel('Cancel').setStyle(ButtonStyle.Secondary),
-      );
-      return interaction.reply({ content: '🏁 Are you sure you want to end this interview?', components: [row], flags: MessageFlags.Ephemeral });
-    }
+        const channel =
+          await createPublicChannel(
+            guild
+          );
 
-    if (interaction.isButton() && interaction.customId.startsWith('confirm_end:')) {
-      if (!isAuthorizedStaff(member)) return safeEphemeral(interaction, '❌ Staff only.');
-      const appId = Number(interaction.customId.split(':')[1]);
-      await interaction.deferUpdate();
-      try {
-        await endInterview(appId, guild);
-        return interaction.editReply({ content: '✅ Interview ended and results were posted.', components: [] });
-      } catch (error) {
-        return interaction.editReply({ content: `❌ ${error.message}`, components: [] });
+        setSetting(
+          'system_mode',
+          'public'
+        );
+
+        await ensureManagementPanel();
+
+        return interaction.update({
+          content:
+            `✅ Public staff applications are open: ${channel}`,
+
+          components: [],
+        });
       }
-    }
 
-    if (interaction.isButton() && interaction.customId.startsWith('cancel_end:')) {
-      return interaction.update({ content: 'Interview continues.', components: [] });
-    }
+      if (
+        interaction.isButton() &&
+        interaction.customId ===
+          'cancel_public'
+      ) {
+        return interaction.update({
+          content:
+            'Cancelled.',
 
-    // ---------------- Final decision ----------------
-    if (interaction.isButton() && /^final_(accept|reject|review):/.test(interaction.customId)) {
-      if (!isAuthorizedStaff(member)) return safeEphemeral(interaction, '❌ Staff only.');
-      const [actionPart, appIdRaw] = interaction.customId.split(':');
-      const appId = Number(appIdRaw);
-      const app = getApplication(appId);
-      if (!app) return safeEphemeral(interaction, 'Application not found.');
+          components: [],
+        });
+      }
 
-      const action = actionPart.replace('final_', '');
-      const status = action === 'accept' ? 'accepted' : action === 'reject' ? 'rejected' : 'further_review';
-      db.prepare('UPDATE applications SET status = ? WHERE id = ?').run(status, appId);
-      await postSubmittedApplication(appId);
+      // ===============================================
+      // CLOSE APPLICATIONS
+      // ===============================================
 
-      if (app.mode === 'test') markTestCheck('final_decision');
+      if (
+        interaction.isButton() &&
+        interaction.customId ===
+          'close_apps'
+      ) {
+        if (
+          !isAuthorizedStaff(
+            member
+          )
+        ) {
+          return safeReply(
+            interaction,
+            '❌ Staff only.'
+          );
+        }
 
-      const user = await client.users.fetch(app.user_id).catch(() => null);
-      if (user) {
-        let message = '';
+        await deletePublicChannel(
+          guild
+        );
+
+        setSetting(
+          'system_mode',
+          'closed'
+        );
+
+        await ensureManagementPanel();
+
+        return safeReply(
+          interaction,
+          '🔴 Applications closed.'
+        );
+      }
+
+      // ===============================================
+      // RESET TEST
+      // ===============================================
+
+      if (
+        interaction.isButton() &&
+        interaction.customId ===
+          'reset_test'
+      ) {
+        if (
+          !isAuthorizedStaff(
+            member
+          )
+        ) {
+          return safeReply(
+            interaction,
+            '❌ Staff only.'
+          );
+        }
+
+        return interaction.reply({
+          content:
+            '⚠️ Delete all TEST data? Real applications will not be touched.',
+
+          components: [
+            new ActionRowBuilder()
+              .addComponents(
+                new ButtonBuilder()
+                  .setCustomId(
+                    'confirm_reset'
+                  )
+                  .setLabel(
+                    'Reset Test'
+                  )
+                  .setStyle(
+                    ButtonStyle.Danger
+                  ),
+
+                new ButtonBuilder()
+                  .setCustomId(
+                    'cancel_reset'
+                  )
+                  .setLabel(
+                    'Cancel'
+                  )
+                  .setStyle(
+                    ButtonStyle.Secondary
+                  )
+              ),
+          ],
+
+          flags:
+            MessageFlags.Ephemeral,
+        });
+      }
+
+      if (
+        interaction.isButton() &&
+        interaction.customId ===
+          'confirm_reset'
+      ) {
+        await interaction.deferUpdate();
+
+        await resetTestData(
+          guild
+        );
+
+        await ensureManagementPanel();
+
+        return interaction.editReply({
+          content:
+            '✅ Test data reset.',
+
+          components: [],
+        });
+      }
+
+      if (
+        interaction.isButton() &&
+        interaction.customId ===
+          'cancel_reset'
+      ) {
+        return interaction.update({
+          content:
+            'Cancelled.',
+
+          components: [],
+        });
+      }
+
+      // ===============================================
+      // APPLY BUTTON
+      // ===============================================
+
+      if (
+        interaction.isButton() &&
+        (
+          interaction.customId ===
+            'apply_test' ||
+          interaction.customId ===
+            'apply_real'
+        )
+      ) {
+        const mode =
+          interaction.customId ===
+          'apply_test'
+            ? 'test'
+            : 'real';
+
+        if (
+          mode === 'test' &&
+          getSetting(
+            'system_mode'
+          ) !== 'test'
+        ) {
+          return safeReply(
+            interaction,
+            'Testing Mode is disabled.'
+          );
+        }
+
+        if (
+          mode === 'real' &&
+          getSetting(
+            'system_mode'
+          ) !== 'public'
+        ) {
+          return safeReply(
+            interaction,
+            'Applications are closed.'
+          );
+        }
+
+        const existing =
+          getActiveApplication(
+            interaction.user.id,
+            mode
+          );
+
+        if (existing) {
+          return safeReply(
+            interaction,
+            `You already have an active application #${existing.id}.`
+          );
+        }
+
+        return interaction.showModal(
+          applicationModal(
+            mode
+          )
+        );
+      }
+
+      // ===============================================
+      // APPLICATION FORM SUBMIT
+      // ===============================================
+
+      if (
+        interaction.isModalSubmit() &&
+        interaction.customId.startsWith(
+          'application_form:'
+        )
+      ) {
+        const mode =
+          interaction.customId
+            .split(':')[1];
+
+        const age =
+          interaction.fields
+            .getTextInputValue(
+              'age'
+            )
+            .trim();
+
+        const experience =
+          interaction.fields
+            .getTextInputValue(
+              'experience'
+            )
+            .trim();
+
+        const result =
+          db.prepare(`
+            INSERT INTO applications(
+              user_id,
+              mode,
+              age,
+              experience,
+              interview_ts,
+              timezone,
+              status,
+              created_at
+            )
+            VALUES(
+              ?,
+              ?,
+              ?,
+              ?,
+              0,
+              'PENDING',
+              'choosing_time',
+              ?
+            )
+          `).run(
+            interaction.user.id,
+            mode,
+            age,
+            experience,
+            Date.now()
+          );
+
+        const app =
+          getApplication(
+            result.lastInsertRowid
+          );
+
+        if (mode === 'test') {
+          markTestCheck(
+            'application_form'
+          );
+        }
+
+        return interaction.reply({
+          ...buildDatePicker(
+            app,
+            0
+          ),
+
+          flags:
+            MessageFlags.Ephemeral,
+        });
+      }
+
+      // ===============================================
+      // DATE PAGE
+      // ===============================================
+
+      if (
+        interaction.isButton() &&
+        interaction.customId.startsWith(
+          'date_page:'
+        )
+      ) {
+        const [
+          ,
+          appId,
+          page,
+        ] =
+          interaction.customId
+            .split(':');
+
+        const app =
+          getApplication(
+            Number(appId)
+          );
+
+        if (!app) {
+          return safeReply(
+            interaction,
+            'Application not found.'
+          );
+        }
+
+        if (
+          interaction.user.id !==
+            app.user_id &&
+          !isAuthorizedStaff(
+            member
+          )
+        ) {
+          return safeReply(
+            interaction,
+            '❌ You cannot edit this application.'
+          );
+        }
+
+        return interaction.update(
+          buildDatePicker(
+            app,
+            Number(page)
+          )
+        );
+      }
+
+      // ===============================================
+      // DATE PICK
+      // ===============================================
+
+      if (
+        interaction.isStringSelectMenu() &&
+        interaction.customId.startsWith(
+          'pick_date:'
+        )
+      ) {
+        const [
+          ,
+          appId,
+        ] =
+          interaction.customId
+            .split(':');
+
+        const app =
+          getApplication(
+            Number(appId)
+          );
+
+        if (!app) {
+          return safeReply(
+            interaction,
+            'Application not found.'
+          );
+        }
+
+        const dateISO =
+          interaction.values[0];
+
+        return interaction.update(
+          buildTimePicker(
+            app,
+            dateISO
+          )
+        );
+      }
+
+      // ===============================================
+      // CHANGE DATE
+      // ===============================================
+
+      if (
+        interaction.isButton() &&
+        interaction.customId.startsWith(
+          'back_to_dates:'
+        )
+      ) {
+        const appId =
+          Number(
+            interaction.customId
+              .split(':')[1]
+          );
+
+        const app =
+          getApplication(
+            appId
+          );
+
+        return interaction.update(
+          buildDatePicker(
+            app,
+            0
+          )
+        );
+      }
+
+      // ===============================================
+      // TIME PICK
+      // ===============================================
+
+      if (
+        interaction.isStringSelectMenu() &&
+        interaction.customId.startsWith(
+          'pick_time:'
+        )
+      ) {
+        const [
+          ,
+          appId,
+          dateISO,
+        ] =
+          interaction.customId
+            .split(':');
+
+        const app =
+          getApplication(
+            Number(appId)
+          );
+
+        const timeValue =
+          interaction.values[0];
+
+        return interaction.update(
+          buildTimezonePicker(
+            app,
+            dateISO,
+            timeValue
+          )
+        );
+      }
+
+      // ===============================================
+      // CHANGE TIME
+      // ===============================================
+
+      if (
+        interaction.isButton() &&
+        interaction.customId.startsWith(
+          'back_to_times:'
+        )
+      ) {
+        const [
+          ,
+          appId,
+          dateISO,
+        ] =
+          interaction.customId
+            .split(':');
+
+        const app =
+          getApplication(
+            Number(appId)
+          );
+
+        return interaction.update(
+          buildTimePicker(
+            app,
+            dateISO
+          )
+        );
+      }
+
+      // ===============================================
+      // TIMEZONE PICK
+      // ===============================================
+
+      if (
+        interaction.isStringSelectMenu() &&
+        interaction.customId.startsWith(
+          'pick_timezone:'
+        )
+      ) {
+        const [
+          ,
+          appId,
+          dateISO,
+          timeValue,
+        ] =
+          interaction.customId
+            .split(':');
+
+        const app =
+          getApplication(
+            Number(appId)
+          );
+
+        return finishSchedule(
+          interaction,
+          app,
+          dateISO,
+          timeValue,
+          interaction.values[0]
+        );
+      }
+
+      // ===============================================
+      // APPROVE
+      // ===============================================
+
+      if (
+        interaction.isButton() &&
+        interaction.customId.startsWith(
+          'approve:'
+        )
+      ) {
+        if (
+          !isAuthorizedStaff(
+            member
+          )
+        ) {
+          return safeReply(
+            interaction,
+            '❌ Staff only.'
+          );
+        }
+
+        const appId =
+          Number(
+            interaction.customId
+              .split(':')[1]
+          );
+
+        const app =
+          getApplication(
+            appId
+          );
+
+        if (!app) {
+          return safeReply(
+            interaction,
+            'Application not found.'
+          );
+        }
+
+        const duplicate =
+          db.prepare(`
+            SELECT 1
+            FROM approvals
+            WHERE app_id = ?
+              AND staff_id = ?
+          `).get(
+            app.id,
+            interaction.user.id
+          );
+
+        if (duplicate) {
+          return safeReply(
+            interaction,
+            'You already approved this interview.'
+          );
+        }
+
+        db.prepare(`
+          INSERT INTO approvals(
+            app_id,
+            staff_id,
+            created_at
+          )
+          VALUES(?, ?, ?)
+        `).run(
+          app.id,
+          interaction.user.id,
+          Date.now()
+        );
+
+        db.prepare(`
+          INSERT OR IGNORE INTO interviewers(
+            app_id,
+            staff_id
+          )
+          VALUES(?, ?)
+        `).run(
+          app.id,
+          interaction.user.id
+        );
+
+        const approvals =
+          getApprovals(
+            app.id
+          );
+
+        let ownerApproval =
+          false;
+
+        for (
+          const staffId
+          of approvals
+        ) {
+          const staff =
+            await guild.members
+              .fetch(staffId)
+              .catch(() => null);
+
+          if (
+            staff &&
+            isOwnerOrCoOwner(
+              staff
+            )
+          ) {
+            ownerApproval =
+              true;
+
+            break;
+          }
+        }
+
         if (app.mode === 'test') {
-          message = `🧪 TEST RESULT: Your test application was marked **${statusLabel(status)}**. No real staff role was changed.`;
-        } else if (status === 'accepted') {
-          message = '✅ Your Crafted SMP staff application was **accepted**! A staff leader will handle your staff role/onboarding.';
-        } else if (status === 'rejected') {
-          message = '❌ Your Crafted SMP staff application was **not accepted** at this time.';
-        } else {
-          message = '🟡 Your Crafted SMP staff application is under **further review**.';
+          markTestCheck(
+            'staff_approvals'
+          );
+
+          if (ownerApproval) {
+            markTestCheck(
+              'owner_override'
+            );
+          }
         }
-        await user.send(message).catch(() => null);
+
+        await postApplication(
+          app.id
+        );
+
+        if (
+          ownerApproval ||
+          approvals.length >= 2
+        ) {
+          await confirmInterview(
+            app.id,
+            guild
+          );
+
+          return safeReply(
+            interaction,
+            '✅ Interview confirmed.'
+          );
+        }
+
+        return safeReply(
+          interaction,
+          `✅ Approval recorded. ${approvals.length}/2 approvals.`
+        );
       }
 
-      return safeEphemeral(interaction, `✅ Application marked as **${statusLabel(status)}**.${app.mode === 'test' ? ' This was only a test.' : ''}`);
+      // ===============================================
+      // ASSIGN INTERVIEWERS
+      // ===============================================
+
+      if (
+        interaction.isButton() &&
+        interaction.customId.startsWith(
+          'assign:'
+        )
+      ) {
+        if (
+          !isAuthorizedStaff(
+            member
+          )
+        ) {
+          return safeReply(
+            interaction,
+            '❌ Staff only.'
+          );
+        }
+
+        const appId =
+          interaction.customId
+            .split(':')[1];
+
+        const select =
+          new UserSelectMenuBuilder()
+            .setCustomId(
+              `assign_users:${appId}`
+            )
+            .setPlaceholder(
+              'Choose interviewers'
+            )
+            .setMinValues(1)
+            .setMaxValues(2);
+
+        return interaction.reply({
+          content:
+            'Choose 1 or 2 interviewers:',
+
+          components: [
+            new ActionRowBuilder()
+              .addComponents(
+                select
+              ),
+          ],
+
+          flags:
+            MessageFlags.Ephemeral,
+        });
+      }
+
+      if (
+        interaction.isUserSelectMenu() &&
+        interaction.customId.startsWith(
+          'assign_users:'
+        )
+      ) {
+        const appId =
+          Number(
+            interaction.customId
+              .split(':')[1]
+          );
+
+        const valid = [];
+
+        for (
+          const userId
+          of interaction.values
+        ) {
+          const selectedMember =
+            await guild.members
+              .fetch(userId)
+              .catch(() => null);
+
+          if (
+            selectedMember &&
+            isAuthorizedStaff(
+              selectedMember
+            )
+          ) {
+            valid.push(
+              userId
+            );
+          }
+        }
+
+        if (!valid.length) {
+          return interaction.update({
+            content:
+              '❌ Selected users are not staff.',
+
+            components: [],
+          });
+        }
+
+        db.prepare(`
+          DELETE FROM interviewers
+          WHERE app_id = ?
+        `).run(appId);
+
+        for (
+          const staffId
+          of valid
+        ) {
+          db.prepare(`
+            INSERT INTO interviewers(
+              app_id,
+              staff_id
+            )
+            VALUES(?, ?)
+          `).run(
+            appId,
+            staffId
+          );
+        }
+
+        await postApplication(
+          appId
+        );
+
+        return interaction.update({
+          content:
+            `✅ Interviewers: ${valid.map(id => `<@${id}>`).join(', ')}`,
+
+          components: [],
+        });
+      }
+
+      // ===============================================
+      // RESCHEDULE
+      // ===============================================
+
+      if (
+        interaction.isButton() &&
+        interaction.customId.startsWith(
+          'reschedule:'
+        )
+      ) {
+        if (
+          !isAuthorizedStaff(
+            member
+          )
+        ) {
+          return safeReply(
+            interaction,
+            '❌ Staff only.'
+          );
+        }
+
+        const appId =
+          Number(
+            interaction.customId
+              .split(':')[1]
+          );
+
+        const app =
+          getApplication(
+            appId
+          );
+
+        db.prepare(`
+          UPDATE applications
+          SET status = 'needs_time'
+          WHERE id = ?
+        `).run(
+          app.id
+        );
+
+        await postApplication(
+          app.id
+        );
+
+        const user =
+          await client.users
+            .fetch(
+              app.user_id
+            )
+            .catch(() => null);
+
+        if (user) {
+          await user.send({
+            content:
+              '📅 Staff needs you to choose a different interview date/time.',
+
+            components: [
+              new ActionRowBuilder()
+                .addComponents(
+                  new ButtonBuilder()
+                    .setCustomId(
+                      `choose_new_time:${app.id}`
+                    )
+                    .setLabel(
+                      'Choose New Date & Time'
+                    )
+                    .setEmoji('📅')
+                    .setStyle(
+                      ButtonStyle.Primary
+                    )
+                ),
+            ],
+          }).catch(() => null);
+        }
+
+        if (app.mode === 'test') {
+          markTestCheck(
+            'rescheduling'
+          );
+        }
+
+        return safeReply(
+          interaction,
+          '📅 Applicant asked to choose a new time.'
+        );
+      }
+
+      if (
+        interaction.isButton() &&
+        interaction.customId.startsWith(
+          'choose_new_time:'
+        )
+      ) {
+        const appId =
+          Number(
+            interaction.customId
+              .split(':')[1]
+          );
+
+        const app =
+          getApplication(
+            appId
+          );
+
+        if (
+          interaction.user.id !==
+          app.user_id
+        ) {
+          return safeReply(
+            interaction,
+            '❌ This button is only for the applicant.'
+          );
+        }
+
+        return interaction.reply({
+          ...buildDatePicker(
+            app,
+            0
+          ),
+
+          flags:
+            MessageFlags.Ephemeral,
+        });
+      }
+
+      // ===============================================
+      // CAN'T MAKE IT
+      // ===============================================
+
+      if (
+        interaction.isButton() &&
+        interaction.customId.startsWith(
+          'cant_make:'
+        )
+      ) {
+        if (
+          !isAuthorizedStaff(
+            member
+          )
+        ) {
+          return safeReply(
+            interaction,
+            '❌ Staff only.'
+          );
+        }
+
+        const appId =
+          Number(
+            interaction.customId
+              .split(':')[1]
+          );
+
+        db.prepare(`
+          DELETE FROM interviewers
+          WHERE app_id = ?
+            AND staff_id = ?
+        `).run(
+          appId,
+          interaction.user.id
+        );
+
+        db.prepare(`
+          UPDATE applications
+          SET status = 'needs_interviewer'
+          WHERE id = ?
+        `).run(
+          appId
+        );
+
+        await postApplication(
+          appId
+        );
+
+        return safeReply(
+          interaction,
+          '✅ You were removed from the interview.'
+        );
+      }
+
+      // ===============================================
+      // START TEST NOW
+      // ===============================================
+
+      if (
+        interaction.isButton() &&
+        interaction.customId.startsWith(
+          'test_now:'
+        )
+      ) {
+        if (
+          !isAuthorizedStaff(
+            member
+          )
+        ) {
+          return safeReply(
+            interaction,
+            '❌ Staff only.'
+          );
+        }
+
+        const appId =
+          Number(
+            interaction.customId
+              .split(':')[1]
+          );
+
+        let app =
+          getApplication(
+            appId
+          );
+
+        if (
+          !app ||
+          app.mode !== 'test'
+        ) {
+          return safeReply(
+            interaction,
+            '❌ Test applications only.'
+          );
+        }
+
+        db.prepare(`
+          UPDATE applications
+          SET interview_ts = ?
+          WHERE id = ?
+        `).run(
+          unixNow(),
+          app.id
+        );
+
+        db.prepare(`
+          INSERT OR IGNORE INTO interviewers(
+            app_id,
+            staff_id
+          )
+          VALUES(?, ?)
+        `).run(
+          app.id,
+          interaction.user.id
+        );
+
+        app =
+          getApplication(
+            app.id
+          );
+
+        await confirmInterview(
+          app.id,
+          guild
+        );
+
+        await startInterview(
+          app.id,
+          guild,
+          interaction.user.id
+        );
+
+        return safeReply(
+          interaction,
+          '⚡ Test interview started now. Check the interview voice channel and staff scoring channel.'
+        );
+      }
+
+      // ===============================================
+      // SIMULATE REMINDERS
+      // ===============================================
+
+      if (
+        interaction.isButton() &&
+        interaction.customId.startsWith(
+          'reminder:'
+        )
+      ) {
+        if (
+          !isAuthorizedStaff(
+            member
+          )
+        ) {
+          return safeReply(
+            interaction,
+            '❌ Staff only.'
+          );
+        }
+
+        const [
+          ,
+          appId,
+          reminder,
+        ] =
+          interaction.customId
+            .split(':');
+
+        const app =
+          getApplication(
+            Number(appId)
+          );
+
+        const labels = {
+          24:
+            '24 Hours',
+
+          1:
+            '1 Hour',
+
+          10:
+            '10 Minutes',
+        };
+
+        await sendReminder(
+          app,
+          labels[reminder]
+        );
+
+        return safeReply(
+          interaction,
+          `🧪 ${labels[reminder]} reminder sent.`
+        );
+      }
+
+      // ===============================================
+      // START INTERVIEW
+      // ===============================================
+
+      if (
+        interaction.isButton() &&
+        interaction.customId.startsWith(
+          'start_interview:'
+        )
+      ) {
+        if (
+          !isAuthorizedStaff(
+            member
+          )
+        ) {
+          return safeReply(
+            interaction,
+            '❌ Staff only.'
+          );
+        }
+
+        const appId =
+          Number(
+            interaction.customId
+              .split(':')[1]
+          );
+
+        await interaction.deferReply({
+          flags:
+            MessageFlags.Ephemeral,
+        });
+
+        try {
+          await startInterview(
+            appId,
+            guild,
+            interaction.user.id
+          );
+
+          return interaction.editReply(
+            '🎙️ Interview started.'
+          );
+        } catch (error) {
+          return interaction.editReply(
+            `❌ ${error.message}`
+          );
+        }
+      }
+
+      // ===============================================
+      // OPEN SCORECARD
+      // ===============================================
+
+      if (
+        interaction.isButton() &&
+        interaction.customId.startsWith(
+          'scorecard:'
+        )
+      ) {
+        const appId =
+          Number(
+            interaction.customId
+              .split(':')[1]
+          );
+
+        const app =
+          getApplication(
+            appId
+          );
+
+        const interviewers =
+          getInterviewers(
+            app.id
+          );
+
+        if (
+          !interviewers.includes(
+            interaction.user.id
+          ) &&
+          !isOwnerOrCoOwner(
+            member
+          )
+        ) {
+          return safeReply(
+            interaction,
+            '❌ You are not an assigned interviewer.'
+          );
+        }
+
+        if (
+          !interviewers.includes(
+            interaction.user.id
+          )
+        ) {
+          db.prepare(`
+            INSERT OR IGNORE INTO interviewers(
+              app_id,
+              staff_id
+            )
+            VALUES(?, ?)
+          `).run(
+            app.id,
+            interaction.user.id
+          );
+        }
+
+        return interaction.reply({
+          embeds: [
+            scorecardEmbed(
+              app,
+              interaction.user.id
+            ),
+          ],
+
+          components:
+            scorecardComponents(
+              app,
+              interaction.user.id
+            ),
+
+          flags:
+            MessageFlags.Ephemeral,
+        });
+      }
+
+      // ===============================================
+      // SCORE QUESTION
+      // ===============================================
+
+      if (
+        interaction.isButton() &&
+        interaction.customId.startsWith(
+          'score:'
+        )
+      ) {
+        const [
+          ,
+          appId,
+          index,
+          score,
+        ] =
+          interaction.customId
+            .split(':');
+
+        const app =
+          getApplication(
+            Number(appId)
+          );
+
+        const questions =
+          getQuestions(app);
+
+        const question =
+          questions[
+            Number(index)
+          ];
+
+        if (!question) {
+          return safeReply(
+            interaction,
+            'Question not found.'
+          );
+        }
+
+        db.prepare(`
+          INSERT INTO scores(
+            app_id,
+            staff_id,
+            question_key,
+            score
+          )
+          VALUES(?, ?, ?, ?)
+          ON CONFLICT(
+            app_id,
+            staff_id,
+            question_key
+          )
+          DO UPDATE SET
+            score = excluded.score
+        `).run(
+          app.id,
+          interaction.user.id,
+          question.key,
+          Number(score)
+        );
+
+        db.prepare(`
+          INSERT INTO score_sessions(
+            app_id,
+            staff_id,
+            current_index,
+            finished
+          )
+          VALUES(?, ?, ?, 0)
+          ON CONFLICT(
+            app_id,
+            staff_id
+          )
+          DO UPDATE SET
+            current_index =
+              excluded.current_index
+        `).run(
+          app.id,
+          interaction.user.id,
+          Number(index)
+        );
+
+        if (app.mode === 'test') {
+          markTestCheck(
+            'scoring'
+          );
+        }
+
+        return interaction.update({
+          embeds: [
+            scorecardEmbed(
+              app,
+              interaction.user.id
+            ),
+          ],
+
+          components:
+            scorecardComponents(
+              app,
+              interaction.user.id
+            ),
+        });
+      }
+
+      // ===============================================
+      // PREVIOUS QUESTION
+      // ===============================================
+
+      if (
+        interaction.isButton() &&
+        interaction.customId.startsWith(
+          'previous_question:'
+        )
+      ) {
+        const appId =
+          Number(
+            interaction.customId
+              .split(':')[1]
+          );
+
+        const app =
+          getApplication(
+            appId
+          );
+
+        const session =
+          getScoreSession(
+            app.id,
+            interaction.user.id
+          );
+
+        const newIndex =
+          Math.max(
+            0,
+            session.current_index -
+              1
+          );
+
+        db.prepare(`
+          UPDATE score_sessions
+          SET current_index = ?
+          WHERE app_id = ?
+            AND staff_id = ?
+        `).run(
+          newIndex,
+          app.id,
+          interaction.user.id
+        );
+
+        if (app.mode === 'test') {
+          markTestCheck(
+            'navigation'
+          );
+        }
+
+        return interaction.update({
+          embeds: [
+            scorecardEmbed(
+              app,
+              interaction.user.id
+            ),
+          ],
+
+          components:
+            scorecardComponents(
+              app,
+              interaction.user.id
+            ),
+        });
+      }
+
+      // ===============================================
+      // NEXT QUESTION
+      // ===============================================
+
+      if (
+        interaction.isButton() &&
+        interaction.customId.startsWith(
+          'next_question:'
+        )
+      ) {
+        const appId =
+          Number(
+            interaction.customId
+              .split(':')[1]
+          );
+
+        const app =
+          getApplication(
+            appId
+          );
+
+        const session =
+          getScoreSession(
+            app.id,
+            interaction.user.id
+          );
+
+        const questions =
+          getQuestions(app);
+
+        const newIndex =
+          Math.min(
+            questions.length - 1,
+            session.current_index +
+              1
+          );
+
+        db.prepare(`
+          UPDATE score_sessions
+          SET current_index = ?
+          WHERE app_id = ?
+            AND staff_id = ?
+        `).run(
+          newIndex,
+          app.id,
+          interaction.user.id
+        );
+
+        if (app.mode === 'test') {
+          markTestCheck(
+            'navigation'
+          );
+        }
+
+        return interaction.update({
+          embeds: [
+            scorecardEmbed(
+              app,
+              interaction.user.id
+            ),
+          ],
+
+          components:
+            scorecardComponents(
+              app,
+              interaction.user.id
+            ),
+        });
+      }
+
+      // ===============================================
+      // FINISH SCORE
+      // ===============================================
+
+      if (
+        interaction.isButton() &&
+        interaction.customId.startsWith(
+          'finish_score:'
+        )
+      ) {
+        const appId =
+          Number(
+            interaction.customId
+              .split(':')[1]
+          );
+
+        const app =
+          getApplication(
+            appId
+          );
+
+        const total =
+          interviewerTotal(
+            app.id,
+            interaction.user.id
+          );
+
+        if (
+          total.count < 21
+        ) {
+          return safeReply(
+            interaction,
+            `❌ You scored ${total.count}/21 questions. Finish every question first.`
+          );
+        }
+
+        db.prepare(`
+          INSERT INTO score_sessions(
+            app_id,
+            staff_id,
+            current_index,
+            finished
+          )
+          VALUES(?, ?, 20, 1)
+          ON CONFLICT(
+            app_id,
+            staff_id
+          )
+          DO UPDATE SET
+            finished = 1
+        `).run(
+          app.id,
+          interaction.user.id
+        );
+
+        const interviewers =
+          getInterviewers(
+            app.id
+          );
+
+        if (
+          app.mode === 'test' &&
+          interviewers.length >= 2
+        ) {
+          const finished =
+            interviewers.filter(
+              staffId =>
+                db.prepare(`
+                  SELECT finished
+                  FROM score_sessions
+                  WHERE app_id = ?
+                    AND staff_id = ?
+                `).get(
+                  app.id,
+                  staffId
+                )?.finished === 1
+            );
+
+          if (
+            finished.length >= 2
+          ) {
+            markTestCheck(
+              'two_interviewer_scoring'
+            );
+          }
+        }
+
+        return interaction.update({
+          content:
+            `✅ Scorecard complete: **${total.total}/63** — ${((total.total / 63) * 100).toFixed(1)}%`,
+
+          embeds: [],
+
+          components: [],
+        });
+      }
+
+      // ===============================================
+      // END INTERVIEW
+      // ===============================================
+
+      if (
+        interaction.isButton() &&
+        interaction.customId.startsWith(
+          'end_interview:'
+        )
+      ) {
+        if (
+          !isAuthorizedStaff(
+            member
+          )
+        ) {
+          return safeReply(
+            interaction,
+            '❌ Staff only.'
+          );
+        }
+
+        const appId =
+          interaction.customId
+            .split(':')[1];
+
+        return interaction.reply({
+          content:
+            '🏁 Are you sure you want to end the interview?',
+
+          components: [
+            new ActionRowBuilder()
+              .addComponents(
+                new ButtonBuilder()
+                  .setCustomId(
+                    `confirm_end:${appId}`
+                  )
+                  .setLabel(
+                    'Yes — End Interview'
+                  )
+                  .setStyle(
+                    ButtonStyle.Danger
+                  ),
+
+                new ButtonBuilder()
+                  .setCustomId(
+                    'cancel_end'
+                  )
+                  .setLabel(
+                    'Cancel'
+                  )
+                  .setStyle(
+                    ButtonStyle.Secondary
+                  )
+              ),
+          ],
+
+          flags:
+            MessageFlags.Ephemeral,
+        });
+      }
+
+      if (
+        interaction.isButton() &&
+        interaction.customId.startsWith(
+          'confirm_end:'
+        )
+      ) {
+        const appId =
+          Number(
+            interaction.customId
+              .split(':')[1]
+          );
+
+        await interaction.deferUpdate();
+
+        try {
+          await finishInterview(
+            appId,
+            guild
+          );
+
+          return interaction.editReply({
+            content:
+              '✅ Interview ended and results posted.',
+
+            components: [],
+          });
+        } catch (error) {
+          return interaction.editReply({
+            content:
+              `❌ ${error.message}`,
+
+            components: [],
+          });
+        }
+      }
+
+      if (
+        interaction.isButton() &&
+        interaction.customId ===
+          'cancel_end'
+      ) {
+        return interaction.update({
+          content:
+            'Interview continues.',
+
+          components: [],
+        });
+      }
+
+      // ===============================================
+      // ACCEPT
+      // ===============================================
+
+      if (
+        interaction.isButton() &&
+        interaction.customId.startsWith(
+          'accept:'
+        )
+      ) {
+        if (
+          !isAuthorizedStaff(
+            member
+          )
+        ) {
+          return safeReply(
+            interaction,
+            '❌ Staff only.'
+          );
+        }
+
+        const appId =
+          Number(
+            interaction.customId
+              .split(':')[1]
+          );
+
+        const app =
+          getApplication(
+            appId
+          );
+
+        db.prepare(`
+          UPDATE applications
+          SET status = 'accepted'
+          WHERE id = ?
+        `).run(
+          app.id
+        );
+
+        await postApplication(
+          app.id
+        );
+
+        if (app.mode === 'test') {
+          markTestCheck(
+            'final_decision'
+          );
+        }
+
+        const user =
+          await client.users
+            .fetch(
+              app.user_id
+            )
+            .catch(() => null);
+
+        if (user) {
+          await user.send(
+            app.mode === 'test'
+              ? '🧪 TEST: Application marked accepted. No real staff role was given.'
+              : '✅ Your Crafted SMP staff application was accepted!'
+          ).catch(() => null);
+        }
+
+        return safeReply(
+          interaction,
+          app.mode === 'test'
+            ? '🧪 Test applicant marked accepted.'
+            : '✅ Applicant accepted.'
+        );
+      }
+
+      // ===============================================
+      // REJECT
+      // ===============================================
+
+      if (
+        interaction.isButton() &&
+        interaction.customId.startsWith(
+          'reject:'
+        )
+      ) {
+        if (
+          !isAuthorizedStaff(
+            member
+          )
+        ) {
+          return safeReply(
+            interaction,
+            '❌ Staff only.'
+          );
+        }
+
+        const appId =
+          Number(
+            interaction.customId
+              .split(':')[1]
+          );
+
+        const app =
+          getApplication(
+            appId
+          );
+
+        db.prepare(`
+          UPDATE applications
+          SET status = 'rejected'
+          WHERE id = ?
+        `).run(
+          app.id
+        );
+
+        await postApplication(
+          app.id
+        );
+
+        if (app.mode === 'test') {
+          markTestCheck(
+            'final_decision'
+          );
+        }
+
+        const user =
+          await client.users
+            .fetch(
+              app.user_id
+            )
+            .catch(() => null);
+
+        if (user) {
+          await user.send(
+            app.mode === 'test'
+              ? '🧪 TEST: Application marked rejected.'
+              : '❌ Your Crafted SMP staff application was not accepted at this time.'
+          ).catch(() => null);
+        }
+
+        return safeReply(
+          interaction,
+          'Application marked rejected.'
+        );
+      }
+
+      // ===============================================
+      // FURTHER REVIEW
+      // ===============================================
+
+      if (
+        interaction.isButton() &&
+        interaction.customId.startsWith(
+          'review:'
+        )
+      ) {
+        if (
+          !isAuthorizedStaff(
+            member
+          )
+        ) {
+          return safeReply(
+            interaction,
+            '❌ Staff only.'
+          );
+        }
+
+        const appId =
+          Number(
+            interaction.customId
+              .split(':')[1]
+          );
+
+        const app =
+          getApplication(
+            appId
+          );
+
+        db.prepare(`
+          UPDATE applications
+          SET status = 'further_review'
+          WHERE id = ?
+        `).run(
+          app.id
+        );
+
+        await postApplication(
+          app.id
+        );
+
+        if (app.mode === 'test') {
+          markTestCheck(
+            'final_decision'
+          );
+        }
+
+        return safeReply(
+          interaction,
+          '🟡 Application moved to further review.'
+        );
+      }
+    } catch (error) {
+      console.error(
+        'Interaction error:',
+        error
+      );
+
+      await safeReply(
+        interaction,
+        `❌ Something went wrong: ${error.message}`
+      );
     }
-
-  } catch (error) {
-    console.error('Interaction error:', error);
-    await safeEphemeral(interaction, `❌ Something went wrong: ${error.message}`);
   }
-});
+);
 
-client.login(DISCORD_TOKEN);
+// =====================================================
+// LOGIN
+// =====================================================
+
+client.login(
+  DISCORD_TOKEN
+);
