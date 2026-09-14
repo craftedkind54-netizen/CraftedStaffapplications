@@ -22,7 +22,7 @@ const Database = require('better-sqlite3');
 const { DateTime } = require('luxon');
 
 // =====================================================
-// CONFIG
+// CRAFTED SMP STAFF APPLICATION BOT
 // =====================================================
 
 const GUILD_ID = '1543363950262100118';
@@ -62,7 +62,6 @@ const client = new Client({
 // =====================================================
 
 const db = new Database('crafted_staff_applications.db');
-
 db.pragma('journal_mode = WAL');
 
 db.exec(`
@@ -104,15 +103,16 @@ CREATE TABLE IF NOT EXISTS interviewers (
   PRIMARY KEY(app_id, staff_id)
 );
 
-CREATE TABLE IF NOT EXISTS scores (
+CREATE TABLE IF NOT EXISTS category_scores (
   app_id INTEGER NOT NULL,
   staff_id TEXT NOT NULL,
-  question_key TEXT NOT NULL,
-  score INTEGER NOT NULL,
-  PRIMARY KEY(app_id, staff_id, question_key)
+  category_index INTEGER NOT NULL,
+  score INTEGER,
+  notes TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY(app_id, staff_id, category_index)
 );
 
-CREATE TABLE IF NOT EXISTS score_sessions (
+CREATE TABLE IF NOT EXISTS question_sessions (
   app_id INTEGER NOT NULL,
   staff_id TEXT NOT NULL,
   current_index INTEGER NOT NULL DEFAULT 0,
@@ -137,7 +137,7 @@ CREATE TABLE IF NOT EXISTS test_checks (
 function ensureColumn(table, column, definition) {
   const columns = db.prepare(`PRAGMA table_info(${table})`).all();
 
-  if (!columns.some(c => c.name === column)) {
+  if (!columns.some((c) => c.name === column)) {
     db.exec(
       `ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`
     );
@@ -247,17 +247,17 @@ const TEST_CHECKS = [
 
   [
     'questions',
-    'Random interview questions',
+    'Interview question navigation',
   ],
 
   [
-    'typed_question',
-    'Typed question selection',
+    'category_scoring',
+    'Category scoring',
   ],
 
   [
-    'typed_score',
-    'Typed score entry',
+    'category_notes',
+    'Category notes',
   ],
 
   [
@@ -345,24 +345,80 @@ function checklistText() {
 }
 
 // =====================================================
-// INTERVIEW QUESTIONS
+// INTERVIEW BRIEF + EXACT QUESTIONS
 // =====================================================
+
+const INTERVIEW_BRIEF = [
+  '**Welcome to the Moderator Application Process!**',
+
+  '',
+
+  'Thank you for your interest in helping make our SMP a fun, fair, and welcoming community. Moderators are expected to be mature, active, respectful, and capable of handling situations professionally.',
+
+  '',
+
+  'Please answer all questions honestly and in detail.',
+
+  '',
+
+  'You have about **1 minute to answer each question**. A question not answered, or a 5–10 second delay, may be skipped and can impact your score.',
+
+  '',
+
+  '**This meeting is recorded and reviewed.**',
+
+  '',
+
+  'You will be graded based on your performance during the meeting.',
+
+  '',
+
+  '🛡️ **Trial Moderator Promotion Board**',
+].join('\n');
 
 const QUESTION_CATEGORIES = [
   {
     name:
       '📖 General Knowledge',
 
+    code:
+      'DE',
+
     questions: [
-      'Why do you want to become a Moderator?',
+      {
+        number: 1,
 
-      'What do you believe the role of a moderator is?',
+        text:
+          'Why do you want to become a Moderator?',
+      },
 
-      'What qualities make an excellent moderator?',
+      {
+        number: 2,
 
-      'What does fairness mean to you?',
+        text:
+          'What do you believe the role of a moderator is?',
+      },
 
-      'Why is professionalism important when moderating a community?',
+      {
+        number: 3,
+
+        text:
+          'What qualities make an excellent moderator?',
+      },
+
+      {
+        number: 4,
+
+        text:
+          'What does fairness mean to you?',
+      },
+
+      {
+        number: 5,
+
+        text:
+          'Why is professionalism important when moderating a community?',
+      },
     ],
   },
 
@@ -370,16 +426,44 @@ const QUESTION_CATEGORIES = [
     name:
       '🤝 Community & Leadership',
 
+    code:
+      '',
+
     questions: [
-      'How would you help new players feel welcomed on the SMP?',
+      {
+        number: 6,
 
-      'What would you do to improve the community experience?',
+        text:
+          'How would you help new players feel welcomed on the SMP?',
+      },
 
-      'How do you handle disagreements with other people?',
+      {
+        number: 7,
 
-      'What makes a good leader?',
+        text:
+          'What would you do to improve the community experience?',
+      },
 
-      'Why should the staff team trust you with moderation permissions?',
+      {
+        number: 8,
+
+        text:
+          'How do you handle disagreements with other people?',
+      },
+
+      {
+        number: 9,
+
+        text:
+          'What makes a good leader?',
+      },
+
+      {
+        number: 10,
+
+        text:
+          'Why should the staff team trust you with moderation permissions?',
+      },
     ],
   },
 
@@ -387,14 +471,37 @@ const QUESTION_CATEGORIES = [
     name:
       '⚖️ Rule Enforcement Scenarios',
 
+    code:
+      'KI',
+
     questions: [
-      'You witness a player using inappropriate language in global chat. What actions would you take?',
+      {
+        number: 12,
 
-      'A player is intentionally trying to provoke others into breaking rules. How would you deal with this?',
+        text:
+          'You witness a player using inappropriate language in global chat. What actions would you take?',
+      },
 
-      'A player is bypassing chat filters and is repeatedly spamming chat after multiple warnings. How would you handle the situation?',
+      {
+        number: 13,
 
-      'Several players report someone for hacking, but there is no evidence. What steps would you take before making a decision?',
+        text:
+          'A player is intentionally trying to provoke others into breaking rules. How would you deal with this?',
+      },
+
+      {
+        number: 14,
+
+        text:
+          'A player is bypassing chat filters and is repeatedly spamming chat after multiple warnings. How would you handle the situation? send inappropriate messages. What would you do?',
+      },
+
+      {
+        number: 15,
+
+        text:
+          'Several players report someone for hacking, but there is no evidence. What steps would you take before making a decision?',
+      },
     ],
   },
 
@@ -402,16 +509,44 @@ const QUESTION_CATEGORIES = [
     name:
       '🔥 Advanced Scenario Questions',
 
+    code:
+      'DE',
+
     questions: [
-      'One of your close friends is caught cheating. They ask you not to report them. What would you do and why?',
+      {
+        number: 16,
 
-      'A popular player is breaking rules, but many community members defend them because they are well-known. How would you handle the situation?',
+        text:
+          'One of your close friends is caught cheating. They ask you not to report them. What would you do and why?',
+      },
 
-      'You accidentally punish the wrong player. What would you do next?',
+      {
+        number: 17,
 
-      'Another moderator gives a punishment that you believe is unfair. How would you address the situation?',
+        text:
+          'A popular player is breaking rules, but many community members defend them because they are well-known. How would you handle the situation?',
+      },
 
-      'You are the only staff member online and multiple issues happen at the same time: a player is spamming, someone reports a hacker, and two players are arguing in chat. How would you prioritize and handle each situation?',
+      {
+        number: 18,
+
+        text:
+          'You accidentally punish the wrong player. What would you do next?',
+      },
+
+      {
+        number: 19,
+
+        text:
+          'Another moderator gives a punishment that you believe is unfair. How would you address the situation?',
+      },
+
+      {
+        number: 20,
+
+        text:
+          'You are the only staff member online and multiple issues happen at the same time:\n• A player is spamming.\n• Someone reports a hacker.\n• Two players are arguing in chat.\nHow would you prioritize and handle each situation?',
+      },
     ],
   },
 
@@ -419,16 +554,44 @@ const QUESTION_CATEGORIES = [
     name:
       '🧠 Judgment & Decision Making',
 
+    code:
+      '',
+
     questions: [
-      'What would you do if you were unsure how to handle a moderation situation?',
+      {
+        number: 21,
 
-      'When should a moderator ask for help from higher-ranking staff?',
+        text:
+          'What would you do if you were unsure how to handle a moderation situation?',
+      },
 
-      'What is more important: being liked by players or enforcing rules fairly? Explain your answer.',
+      {
+        number: 22,
 
-      'How would you respond to a player who becomes angry after receiving a punishment?',
+        text:
+          'When should a moderator ask for help from higher-ranking staff?',
+      },
 
-      'What would you do if someone accused you of staff abuse?',
+      {
+        number: 23,
+
+        text:
+          'What is more important:\n• Being liked by players\n• Enforcing rules fairly\nExplain your answer.',
+      },
+
+      {
+        number: 24,
+
+        text:
+          'How would you respond to a player who becomes angry after receiving a punishment?',
+      },
+
+      {
+        number: 25,
+
+        text:
+          'What would you do if someone accused you of staff abuse?',
+      },
     ],
   },
 
@@ -436,16 +599,44 @@ const QUESTION_CATEGORIES = [
     name:
       '🚨 Serious Staff Scenarios',
 
+    code:
+      '',
+
     questions: [
-      'You discover another staff member abusing their permissions. What actions would you take?',
+      {
+        number: 26,
 
-      'A player privately tells you they found a duplication exploit that could harm the economy. What would you do?',
+        text:
+          'You discover another staff member abusing their permissions. What actions would you take?',
+      },
 
-      'A player threatens to leave the server unless their punishment is removed. How would you respond?',
+      {
+        number: 27,
 
-      'You find evidence that a staff member is leaking private staff information. What would you do?',
+        text:
+          'A player privately tells you they found a duplication exploit that could harm the economy. What would you do?',
+      },
 
-      'A player creates multiple alternate accounts to evade punishments. How would you investigate and handle the situation?',
+      {
+        number: 28,
+
+        text:
+          'A player threatens to leave the server unless their punishment is removed. How would you respond?',
+      },
+
+      {
+        number: 29,
+
+        text:
+          'You find evidence that a staff member is leaking private staff information. What would you do?',
+      },
+
+      {
+        number: 30,
+
+        text:
+          'A player creates multiple alternate accounts to evade punishments. How would you investigate and handle the situation?',
+      },
     ],
   },
 
@@ -453,85 +644,67 @@ const QUESTION_CATEGORIES = [
     name:
       '🎭 Bonus Question (Troll Check)',
 
+    code:
+      'DE',
+
     questions: [
-      'You are given Owner rank for 5 minutes. What is the very first thing you do?',
+      {
+        number: 34,
 
-      'As a moderator, you contain a role of leadership and persuasion. Without breaking character, persuade us why ketchup should be a soup.',
+        text:
+          'You are given Owner rank for 5 minutes. What is the very first thing you do?\n\n(This question is designed to test maturity, judgment, and whether applicants think about helping the server rather than abusing power.)',
+      },
 
-      'As being persuasive, explain why noodles should be on a pizza.',
+      {
+        number: 35,
 
-      'Explain how coffee can be a type of tea.',
+        text:
+          'As A moderator you contain role of leadership and persuasion right now persuasive to us with out breaking character why ketchup should be a soup',
+      },
+
+      {
+        number: 36,
+
+        text:
+          'As being persuasive explain why should noodles be on a pizza',
+      },
+
+      {
+        number: 37,
+
+        text:
+          'Ask them to explain how coffee can be a type of tea',
+      },
     ],
   },
 ];
 
-function randomThreePerCategory() {
-  const selected = [];
-
-  QUESTION_CATEGORIES.forEach(
+const ALL_QUESTIONS =
+  QUESTION_CATEGORIES.flatMap(
     (
       category,
       categoryIndex
-    ) => {
-      const indexes =
-        category.questions.map(
-          (_, index) =>
-            index
-        );
+    ) =>
+      category.questions.map(
+        question => ({
+          ...question,
 
-      for (
-        let i =
-          indexes.length - 1;
+          categoryIndex,
 
-        i > 0;
+          categoryName:
+            category.name,
 
-        i--
-      ) {
-        const random =
-          Math.floor(
-            Math.random() *
-              (i + 1)
-          );
-
-        [
-          indexes[i],
-          indexes[random],
-        ] = [
-          indexes[random],
-          indexes[i],
-        ];
-      }
-
-      indexes
-        .slice(
-          0,
-          3
-        )
-        .forEach(
-          questionIndex => {
-            selected.push({
-              key:
-                `${categoryIndex}:${questionIndex}`,
-
-              categoryIndex,
-
-              questionIndex,
-
-              category:
-                category.name,
-
-              question:
-                category.questions[
-                  questionIndex
-                ],
-            });
-          }
-        );
-    }
+          categoryCode:
+            category.code,
+        })
+      )
   );
 
-  return selected;
-}
+const CATEGORY_COUNT =
+  QUESTION_CATEGORIES.length;
+
+const MAX_SCORE_PER_INTERVIEWER =
+  CATEGORY_COUNT * 3;
 
 // =====================================================
 // DATE / TIME PICKERS
@@ -753,16 +926,12 @@ function minimumSelectableDate(
         'day'
       );
 
-  if (
-    app.mode ===
+  return app.mode ===
     'real'
-  ) {
-    return today.plus({
-      days: 7,
-    });
-  }
-
-  return today;
+    ? today.plus({
+        days: 7,
+      })
+    : today;
 }
 
 function buildDatePicker(
@@ -906,6 +1075,7 @@ function buildTimePicker(
             ]
           ) => ({
             value,
+
             label,
           })
         )
@@ -956,7 +1126,9 @@ function buildTimezonePicker(
   const friendly =
     TIME_OPTIONS.find(
       (
-        [value]
+        [
+          value,
+        ]
       ) =>
         value ===
         timeValue
@@ -1024,7 +1196,9 @@ function selectedDateTimeToUnix(
       timezoneValue
     ];
 
-  if (!zone) {
+  if (
+    !zone
+  ) {
     return null;
   }
 
@@ -1164,9 +1338,15 @@ function isAuthorizedStaff(
   member
 ) {
   return (
-    isOwner(member) ||
-    isCoOwner(member) ||
-    isSenior(member)
+    isOwner(
+      member
+    ) ||
+    isCoOwner(
+      member
+    ) ||
+    isSenior(
+      member
+    )
   );
 }
 
@@ -1174,8 +1354,12 @@ function isOwnerOrCoOwner(
   member
 ) {
   return (
-    isOwner(member) ||
-    isCoOwner(member)
+    isOwner(
+      member
+    ) ||
+    isCoOwner(
+      member
+    )
   );
 }
 
@@ -1214,13 +1398,17 @@ async function safeEphemeral(
 async function fetchTextChannel(
   id
 ) {
-  if (!id) {
+  if (
+    !id
+  ) {
     return null;
   }
 
   const channel =
     await client.channels
-      .fetch(id)
+      .fetch(
+        id
+      )
       .catch(
         () => null
       );
@@ -1234,11 +1422,9 @@ function getApplication(
   appId
 ) {
   return db
-    .prepare(`
-      SELECT *
-      FROM applications
-      WHERE id = ?
-    `)
+    .prepare(
+      'SELECT * FROM applications WHERE id = ?'
+    )
     .get(
       appId
     );
@@ -1304,36 +1490,6 @@ function getInterviewers(
       row =>
         row.staff_id
     );
-}
-
-function getSelectedQuestions(
-  app
-) {
-  try {
-    return app.selected_questions
-      ? JSON.parse(
-          app.selected_questions
-        )
-      : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveSelectedQuestions(
-  appId,
-  questions
-) {
-  db.prepare(`
-    UPDATE applications
-    SET selected_questions = ?
-    WHERE id = ?
-  `).run(
-    JSON.stringify(
-      questions
-    ),
-    appId
-  );
 }
 
 function staffTextPermissions(
@@ -1408,6 +1564,48 @@ function staffTextPermissions(
   }
 
   return permissions;
+}
+
+async function deleteMessageIfPossible(
+  channelId,
+  messageId
+) {
+  if (
+    !channelId ||
+    !messageId
+  ) {
+    return;
+  }
+
+  const channel =
+    await fetchTextChannel(
+      channelId
+    );
+
+  if (
+    !channel
+  ) {
+    return;
+  }
+
+  const message =
+    await channel.messages
+      .fetch(
+        messageId
+      )
+      .catch(
+        () => null
+      );
+
+  if (
+    message
+  ) {
+    await message
+      .delete()
+      .catch(
+        () => null
+      );
+  }
 }
 
 // =====================================================
@@ -1547,7 +1745,9 @@ async function ensureManagementPanel() {
       APPLICATION_CONTROL_CHANNEL_ID
     );
 
-  if (!channel) {
+  if (
+    !channel
+  ) {
     throw new Error(
       'Application control channel not found.'
     );
@@ -1904,7 +2104,7 @@ async function createTestApplicantChannel(
 }
 
 // =====================================================
-// APPLICATION FORM
+// APPLICATION MODAL
 // =====================================================
 
 function buildApplicationModal(
@@ -2136,7 +2336,8 @@ async function postSubmittedApplication(
       });
 
   if (
-    app.mode === 'test'
+    app.mode ===
+    'test'
   ) {
     embed.setDescription(
       '🧪 **TEST DATA — NOT A REAL APPLICATION**'
@@ -2198,7 +2399,8 @@ async function postSubmittedApplication(
   }
 
   if (
-    app.mode === 'test' &&
+    app.mode ===
+      'test' &&
     ![
       'in_progress',
       'completed',
@@ -2303,15 +2505,14 @@ async function saveSchedule(
   }
 
   if (
-    app.mode === 'real' &&
+    app.mode ===
+      'real' &&
     timestamp <
       unixNow() +
-        (
-          7 *
+        7 *
           24 *
           60 *
           60
-        )
   ) {
     return safeEphemeral(
       interaction,
@@ -2347,7 +2548,8 @@ async function saveSchedule(
   );
 
   if (
-    app.mode === 'test'
+    app.mode ===
+    'test'
   ) {
     markTestCheck(
       'application_submission'
@@ -2406,7 +2608,9 @@ async function getApprovalStatus(
   ) {
     const member =
       await guild.members
-        .fetch(id)
+        .fetch(
+          id
+        )
         .catch(
           () => null
         );
@@ -2442,7 +2646,8 @@ async function getApprovalStatus(
 
     confirmed:
       ownerOverride ||
-      seniorCount >= 2,
+      seniorCount >=
+        2,
   };
 }
 
@@ -2476,31 +2681,6 @@ async function confirmInterview(
     )
   ) {
     return;
-  }
-
-  let questions =
-    getSelectedQuestions(
-      app
-    );
-
-  if (
-    !questions.length
-  ) {
-    questions =
-      randomThreePerCategory();
-
-    saveSelectedQuestions(
-      app.id,
-      questions
-    );
-
-    if (
-      app.mode === 'test'
-    ) {
-      markTestCheck(
-        'questions'
-      );
-    }
   }
 
   const applicantMember =
@@ -2581,8 +2761,6 @@ async function confirmInterview(
       app.id
     );
 
-  // Applicant gets ONLY Cancel Interviewing.
-
   await textChannel.send({
     content:
       `<@${app.user_id}>`,
@@ -2590,7 +2768,8 @@ async function confirmInterview(
     embeds: [
       new EmbedBuilder()
         .setTitle(
-          app.mode === 'test'
+          app.mode ===
+            'test'
             ? '🧪 TEST Interview Confirmed'
             : '✅ Staff Interview Confirmed'
         )
@@ -2605,7 +2784,7 @@ async function confirmInterview(
 
           '',
 
-          'Wait for staff to start the interview.',
+          'Wait for Owner/Co-Owner to start the interview.',
 
           'When it starts, a clickable voice channel will appear here.',
         ].join('\n')),
@@ -2628,9 +2807,6 @@ async function confirmInterview(
         ),
     ],
   });
-
-  // Interview notification.
-  // Interviewers only get Cancel Interviewing.
 
   const notificationChannel =
     await fetchTextChannel(
@@ -2680,9 +2856,7 @@ async function confirmInterview(
 
               '',
 
-              'Interviewers do not start or end the meeting from here.',
-
-              'If you can no longer interview, use **Cancel Interviewing**.',
+              'Interviewers can cancel if they can no longer attend.',
             ].join('\n')),
         ],
 
@@ -2714,8 +2888,6 @@ async function confirmInterview(
     );
   }
 
-  // Owner / Co-Owner control panel.
-
   const controlChannel =
     await fetchTextChannel(
       APPLICATION_CONTROL_CHANNEL_ID
@@ -2738,7 +2910,7 @@ async function confirmInterview(
 
               '',
 
-              'Only Owner/Co-Owner can use Start Interview and End Meeting.',
+              'Only Owner/Co-Owner can start or end the meeting.',
             ].join('\n')),
         ],
 
@@ -2794,25 +2966,25 @@ async function confirmInterview(
   if (
     user
   ) {
-    await user
-      .send([
-        '✅ **Your Crafted SMP Staff Interview is confirmed.**',
+    await user.send([
+      '✅ **Your Crafted SMP Staff Interview is confirmed.**',
 
-        '',
+      '',
 
-        `<t:${app.interview_ts}:F>`,
+      `<t:${app.interview_ts}:F>`,
 
-        '',
+      '',
 
-        'You will be notified when the voice channel opens.',
-      ].join('\n'))
+      'You will be notified when the voice channel opens.',
+    ].join('\n'))
       .catch(
         () => null
       );
   }
 
   if (
-    app.mode === 'test'
+    app.mode ===
+    'test'
   ) {
     markTestCheck(
       'confirmation'
@@ -2880,7 +3052,11 @@ async function sendInterviewReminder(
       reminder_key,
       sent_at
     )
-    VALUES(?, ?, ?)
+    VALUES(
+      ?,
+      ?,
+      ?
+    )
   `).run(
     app.id,
     key,
@@ -2888,7 +3064,8 @@ async function sendInterviewReminder(
   );
 
   if (
-    app.mode === 'test'
+    app.mode ===
+    'test'
   ) {
     markTestCheck(
       'interview_reminders'
@@ -2960,7 +3137,8 @@ async function reminderSweep() {
 
       if (
         !already &&
-        seconds <= threshold &&
+        seconds <=
+          threshold &&
         seconds >
           Math.max(
             0,
@@ -2971,17 +3149,592 @@ async function reminderSweep() {
           app,
           key,
           label
-        ).catch(
-          console.error
-        );
+        )
+          .catch(
+            console.error
+          );
       }
     }
   }
 }
 
 // =====================================================
-// SCORING CHANNEL
-// Goes under category 1548862844186001478
+// SCORING HELPERS
+// =====================================================
+
+function getQuestionSession(
+  appId,
+  staffId
+) {
+  let session =
+    db.prepare(`
+      SELECT *
+      FROM question_sessions
+      WHERE app_id = ?
+        AND staff_id = ?
+    `).get(
+      appId,
+      staffId
+    );
+
+  if (
+    !session
+  ) {
+    db.prepare(`
+      INSERT INTO question_sessions(
+        app_id,
+        staff_id,
+        current_index,
+        finished
+      )
+      VALUES(
+        ?,
+        ?,
+        0,
+        0
+      )
+    `).run(
+      appId,
+      staffId
+    );
+
+    session = {
+      app_id:
+        appId,
+
+      staff_id:
+        staffId,
+
+      current_index:
+        0,
+
+      finished:
+        0,
+    };
+  }
+
+  return session;
+}
+
+function getCategoryRecord(
+  appId,
+  staffId,
+  categoryIndex
+) {
+  return db
+    .prepare(`
+      SELECT *
+      FROM category_scores
+      WHERE app_id = ?
+        AND staff_id = ?
+        AND category_index = ?
+    `)
+    .get(
+      appId,
+      staffId,
+      categoryIndex
+    );
+}
+
+function getAllCategoryRecords(
+  appId,
+  staffId
+) {
+  return db
+    .prepare(`
+      SELECT *
+      FROM category_scores
+      WHERE app_id = ?
+        AND staff_id = ?
+      ORDER BY category_index
+    `)
+    .all(
+      appId,
+      staffId
+    );
+}
+
+function scoreSummary(
+  appId,
+  staffId
+) {
+  const rows =
+    getAllCategoryRecords(
+      appId,
+      staffId
+    );
+
+  const scored =
+    rows.filter(
+      row =>
+        Number.isInteger(
+          row.score
+        )
+    );
+
+  const total =
+    scored.reduce(
+      (
+        sum,
+        row
+      ) =>
+        sum +
+        row.score,
+
+      0
+    );
+
+  return {
+    rows,
+
+    scoredCount:
+      scored.length,
+
+    total,
+  };
+}
+
+function categoryScoreModal(
+  appId,
+  categoryIndex
+) {
+  const category =
+    QUESTION_CATEGORIES[
+      categoryIndex
+    ];
+
+  const modal =
+    new ModalBuilder()
+      .setCustomId(
+        `category_score_modal:${appId}:${categoryIndex}`
+      )
+      .setTitle(
+        `Score ${category.name
+          .replace(
+            /^[^A-Za-z0-9]+/,
+            ''
+          )
+          .slice(
+            0,
+            35
+          )}`
+      );
+
+  const input =
+    new TextInputBuilder()
+      .setCustomId(
+        'category_score'
+      )
+      .setLabel(
+        'Category score (0/3, 1/3, 2/3, or 3/3)'
+      )
+      .setPlaceholder(
+        'Example: 3/3'
+      )
+      .setStyle(
+        TextInputStyle.Short
+      )
+      .setRequired(
+        true
+      )
+      .setMaxLength(
+        3
+      );
+
+  modal.addComponents(
+    new ActionRowBuilder()
+      .addComponents(
+        input
+      )
+  );
+
+  return modal;
+}
+
+function categoryNotesModal(
+  appId,
+  categoryIndex,
+  currentNotes = ''
+) {
+  const category =
+    QUESTION_CATEGORIES[
+      categoryIndex
+    ];
+
+  const modal =
+    new ModalBuilder()
+      .setCustomId(
+        `category_notes_modal:${appId}:${categoryIndex}`
+      )
+      .setTitle(
+        `Notes - ${category.name
+          .replace(
+            /^[^A-Za-z0-9]+/,
+            ''
+          )
+          .slice(
+            0,
+            35
+          )}`
+      );
+
+  const input =
+    new TextInputBuilder()
+      .setCustomId(
+        'category_notes'
+      )
+      .setLabel(
+        'Interview notes for this category'
+      )
+      .setPlaceholder(
+        'Things you noticed during this section...'
+      )
+      .setStyle(
+        TextInputStyle.Paragraph
+      )
+      .setRequired(
+        false
+      )
+      .setMaxLength(
+        1500
+      );
+
+  if (
+    currentNotes
+  ) {
+    input.setValue(
+      currentNotes.slice(
+        0,
+        1500
+      )
+    );
+  }
+
+  modal.addComponents(
+    new ActionRowBuilder()
+      .addComponents(
+        input
+      )
+  );
+
+  return modal;
+}
+
+function questionEmbed(
+  app,
+  staffId,
+  index
+) {
+  const item =
+    ALL_QUESTIONS[
+      index
+    ];
+
+  if (
+    !item
+  ) {
+    return new EmbedBuilder()
+      .setTitle(
+        '❌ Question Not Found'
+      );
+  }
+
+  const categoryRecord =
+    getCategoryRecord(
+      app.id,
+      staffId,
+      item.categoryIndex
+    );
+
+  const category =
+    QUESTION_CATEGORIES[
+      item.categoryIndex
+    ];
+
+  return new EmbedBuilder()
+    .setTitle(
+      `📝 Interview Question ${index + 1} of ${ALL_QUESTIONS.length}`
+    )
+    .setDescription([
+      `**Applicant:** <@${app.user_id}>`,
+
+      '',
+
+      `### ${category.name}${
+        category.code
+          ? ` — ${category.code}`
+          : ''
+      }`,
+
+      '',
+
+      `## ${item.number}. ${item.text}`,
+
+      '',
+
+      `**Category Score:** ${
+        Number.isInteger(
+          categoryRecord?.score
+        )
+          ? `${categoryRecord.score}/3`
+          : 'Not scored yet'
+      }`,
+
+      '',
+
+      '**Category Notes:**',
+
+      categoryRecord?.notes
+        ? categoryRecord.notes.slice(
+            0,
+            800
+          )
+        : '_No notes yet._',
+    ].join('\n'));
+}
+
+function questionRows(
+  app,
+  staffId,
+  index
+) {
+  const item =
+    ALL_QUESTIONS[
+      index
+    ];
+
+  const categoryIndex =
+    item.categoryIndex;
+
+  return [
+    new ActionRowBuilder()
+      .addComponents(
+        new ButtonBuilder()
+          .setCustomId(
+            `question_prev:${app.id}`
+          )
+          .setLabel(
+            'Previous'
+          )
+          .setEmoji('⬅️')
+          .setStyle(
+            ButtonStyle.Secondary
+          )
+          .setDisabled(
+            index === 0
+          ),
+
+        new ButtonBuilder()
+          .setCustomId(
+            `question_next:${app.id}`
+          )
+          .setLabel(
+            'Next'
+          )
+          .setEmoji('➡️')
+          .setStyle(
+            ButtonStyle.Secondary
+          )
+          .setDisabled(
+            index >=
+              ALL_QUESTIONS.length -
+                1
+          )
+      ),
+
+    new ActionRowBuilder()
+      .addComponents(
+        new ButtonBuilder()
+          .setCustomId(
+            `score_category:${app.id}:${categoryIndex}`
+          )
+          .setLabel(
+            'Type Category Score'
+          )
+          .setEmoji('⭐')
+          .setStyle(
+            ButtonStyle.Success
+          ),
+
+        new ButtonBuilder()
+          .setCustomId(
+            `notes_category:${app.id}:${categoryIndex}`
+          )
+          .setLabel(
+            'Add / Edit Notes'
+          )
+          .setEmoji('🗒️')
+          .setStyle(
+            ButtonStyle.Primary
+          ),
+
+        new ButtonBuilder()
+          .setCustomId(
+            `view_score_progress:${app.id}`
+          )
+          .setLabel(
+            'View Scores'
+          )
+          .setEmoji('📊')
+          .setStyle(
+            ButtonStyle.Secondary
+          )
+      ),
+
+    new ActionRowBuilder()
+      .addComponents(
+        new ButtonBuilder()
+          .setCustomId(
+            `finish_scoring:${app.id}`
+          )
+          .setLabel(
+            'Finish My Scoring'
+          )
+          .setEmoji('✅')
+          .setStyle(
+            ButtonStyle.Success
+          ),
+
+        new ButtonBuilder()
+          .setCustomId(
+            `cant_make:${app.id}`
+          )
+          .setLabel(
+            'Cancel Interviewing'
+          )
+          .setEmoji('❌')
+          .setStyle(
+            ButtonStyle.Danger
+          )
+      ),
+  ];
+}
+
+function scoreProgressEmbed(
+  app,
+  staffId
+) {
+  const rows =
+    getAllCategoryRecords(
+      app.id,
+      staffId
+    );
+
+  const byIndex =
+    new Map(
+      rows.map(
+        row => [
+          row.category_index,
+          row,
+        ]
+      )
+    );
+
+  let total = 0;
+
+  let scoredCount = 0;
+
+  const lines =
+    QUESTION_CATEGORIES.map(
+      (
+        category,
+        index
+      ) => {
+        const row =
+          byIndex.get(
+            index
+          );
+
+        if (
+          Number.isInteger(
+            row?.score
+          )
+        ) {
+          total +=
+            row.score;
+
+          scoredCount++;
+        }
+
+        return [
+          `**${category.name}**`,
+
+          `Score: **${
+            Number.isInteger(
+              row?.score
+            )
+              ? `${row.score}/3`
+              : 'Not scored'
+          }**`,
+
+          `Notes: ${
+            row?.notes
+              ? row.notes.slice(
+                  0,
+                  300
+                )
+              : '_No notes_'
+          }`,
+        ].join('\n');
+      }
+    );
+
+  return new EmbedBuilder()
+    .setTitle(
+      '📊 My Interview Scoring Progress'
+    )
+    .setDescription([
+      `**Applicant:** <@${app.user_id}>`,
+
+      '',
+
+      ...lines,
+
+      '',
+
+      `**Categories Scored:** ${scoredCount}/${CATEGORY_COUNT}`,
+
+      `**Current Total:** ${total}/${MAX_SCORE_PER_INTERVIEWER}`,
+    ].join('\n'));
+}
+
+function allInterviewersFinished(
+  appId
+) {
+  const interviewers =
+    getInterviewers(
+      appId
+    );
+
+  if (
+    !interviewers.length
+  ) {
+    return false;
+  }
+
+  return interviewers.every(
+    id => {
+      const row =
+        db.prepare(`
+          SELECT finished
+          FROM question_sessions
+          WHERE app_id = ?
+            AND staff_id = ?
+        `).get(
+          appId,
+          id
+        );
+
+      return (
+        row?.finished ===
+        1
+      );
+    }
+  );
+}
+
+// =====================================================
+// CREATE SCORING CHANNEL
 // =====================================================
 
 async function createScoringChannel(
@@ -3068,36 +3821,36 @@ async function createScoringChannel(
     embeds: [
       new EmbedBuilder()
         .setTitle(
-          '📝 Interview Questions & Scoring'
+          '🛡️ Trial Moderator Promotion Board'
         )
         .setDescription([
-          `**Applicant:** <@${app.user_id}>`,
+          INTERVIEW_BRIEF,
 
           '',
 
-          '### Scoring platform',
+          '### Scoring',
 
-          'Click **Enter Question Number** and type **1–21**.',
+          'Each category gets **one score out of 3**.',
 
-          'The selected question will appear.',
-
-          'Then click **Enter Score** and type **0–3**.',
+          'Each interviewer also has a private notes section for every category.',
 
           '',
 
-          '**3** = Excellent',
+          '**3/3** = Excellent',
 
-          '**2** = Good',
+          '**2/3** = Good',
 
-          '**1** = Weak',
+          '**1/3** = Weak',
 
-          '**0** = Failed / no answer',
+          '**0/3** = Failed / no answer',
 
           '',
 
-          'Each interviewer scores independently.',
+          'Maximum score per interviewer: **21/21**',
 
-          'Maximum score: **63**.',
+          '',
+
+          'Click **Open Interview Questions** to begin.',
         ].join('\n')),
     ],
 
@@ -3106,22 +3859,22 @@ async function createScoringChannel(
         .addComponents(
           new ButtonBuilder()
             .setCustomId(
-              `choose_question:${app.id}`
+              `open_questions:${app.id}`
             )
             .setLabel(
-              'Enter Question Number'
+              'Open Interview Questions'
             )
-            .setEmoji('🔢')
+            .setEmoji('📝')
             .setStyle(
               ButtonStyle.Primary
             ),
 
           new ButtonBuilder()
             .setCustomId(
-              `view_progress:${app.id}`
+              `view_score_progress:${app.id}`
             )
             .setLabel(
-              'View My Progress'
+              'View My Scores'
             )
             .setEmoji('📊')
             .setStyle(
@@ -3160,7 +3913,6 @@ async function createScoringChannel(
 
 // =====================================================
 // START INTERVIEW
-// OWNER / CO-OWNER ONLY
 // =====================================================
 
 async function startInterview(
@@ -3215,23 +3967,6 @@ async function startInterview(
   ) {
     throw new Error(
       'The interview needs 2 Senior Staff confirmations or 1 Owner/Co-Owner confirmation first.'
-    );
-  }
-
-  let questions =
-    getSelectedQuestions(
-      app
-    );
-
-  if (
-    !questions.length
-  ) {
-    questions =
-      randomThreePerCategory();
-
-    saveSelectedQuestions(
-      app.id,
-      questions
     );
   }
 
@@ -3493,7 +4228,8 @@ async function startInterview(
   }
 
   if (
-    app.mode === 'test'
+    app.mode ===
+    'test'
   ) {
     markTestCheck(
       'voice'
@@ -3506,407 +4242,14 @@ async function startInterview(
 
   return {
     voice,
+
     scoringChannel,
   };
 }
 
 // =====================================================
-// TYPED QUESTION + TYPED SCORE
-// =====================================================
-
-function getScoreSession(
-  appId,
-  staffId
-) {
-  let session =
-    db.prepare(`
-      SELECT *
-      FROM score_sessions
-      WHERE app_id = ?
-        AND staff_id = ?
-    `).get(
-      appId,
-      staffId
-    );
-
-  if (
-    !session
-  ) {
-    db.prepare(`
-      INSERT INTO score_sessions(
-        app_id,
-        staff_id,
-        current_index,
-        finished
-      )
-      VALUES(
-        ?,
-        ?,
-        0,
-        0
-      )
-    `).run(
-      appId,
-      staffId
-    );
-
-    session = {
-      current_index: 0,
-
-      finished: 0,
-    };
-  }
-
-  return session;
-}
-
-function interviewerScore(
-  appId,
-  staffId
-) {
-  const row =
-    db.prepare(`
-      SELECT
-        COALESCE(
-          SUM(score),
-          0
-        ) AS total,
-
-        COUNT(*) AS count
-
-      FROM scores
-
-      WHERE app_id = ?
-        AND staff_id = ?
-    `).get(
-      appId,
-      staffId
-    );
-
-  return {
-    total:
-      row.total,
-
-    count:
-      row.count,
-  };
-}
-
-function questionNumberModal(
-  appId
-) {
-  const modal =
-    new ModalBuilder()
-      .setCustomId(
-        `question_number_modal:${appId}`
-      )
-      .setTitle(
-        'Choose Interview Question'
-      );
-
-  const input =
-    new TextInputBuilder()
-      .setCustomId(
-        'question_number'
-      )
-      .setLabel(
-        'Question number (1-21)'
-      )
-      .setPlaceholder(
-        'Example: 7'
-      )
-      .setStyle(
-        TextInputStyle.Short
-      )
-      .setRequired(
-        true
-      )
-      .setMaxLength(
-        2
-      );
-
-  modal.addComponents(
-    new ActionRowBuilder()
-      .addComponents(
-        input
-      )
-  );
-
-  return modal;
-}
-
-function scoreModal(
-  appId,
-  index
-) {
-  const modal =
-    new ModalBuilder()
-      .setCustomId(
-        `score_modal:${appId}:${index}`
-      )
-      .setTitle(
-        `Score Question ${index + 1}`
-      );
-
-  const input =
-    new TextInputBuilder()
-      .setCustomId(
-        'score'
-      )
-      .setLabel(
-        'Score from 0 to 3'
-      )
-      .setPlaceholder(
-        '0, 1, 2, or 3'
-      )
-      .setStyle(
-        TextInputStyle.Short
-      )
-      .setRequired(
-        true
-      )
-      .setMaxLength(
-        1
-      );
-
-  modal.addComponents(
-    new ActionRowBuilder()
-      .addComponents(
-        input
-      )
-  );
-
-  return modal;
-}
-
-function questionEmbed(
-  app,
-  staffId,
-  index
-) {
-  const questions =
-    getSelectedQuestions(
-      app
-    );
-
-  const item =
-    questions[
-      index
-    ];
-
-  if (
-    !item
-  ) {
-    return new EmbedBuilder()
-      .setTitle(
-        '❌ Question Not Found'
-      );
-  }
-
-  const scoreRow =
-    db.prepare(`
-      SELECT score
-      FROM scores
-      WHERE app_id = ?
-        AND staff_id = ?
-        AND question_key = ?
-    `).get(
-      app.id,
-      staffId,
-      item.key
-    );
-
-  const progress =
-    interviewerScore(
-      app.id,
-      staffId
-    );
-
-  return new EmbedBuilder()
-    .setTitle(
-      `📝 Interview Question ${index + 1}`
-    )
-    .setDescription([
-      `**Applicant:** <@${app.user_id}>`,
-
-      '',
-
-      `### ${item.category}`,
-
-      '',
-
-      `## Question ${index + 1} of 21`,
-
-      '',
-
-      item.question,
-
-      '',
-
-      `**Current Score:** ${
-        scoreRow
-          ? `${scoreRow.score}/3`
-          : 'Not scored yet'
-      }`,
-
-      `**Questions Scored:** ${progress.count}/21`,
-
-      '',
-
-      '**Scoring**',
-
-      '3 = Excellent',
-
-      '2 = Good',
-
-      '1 = Weak',
-
-      '0 = Failed / no answer',
-    ].join('\n'));
-}
-
-function questionRows(
-  app,
-  index
-) {
-  return [
-    new ActionRowBuilder()
-      .addComponents(
-        new ButtonBuilder()
-          .setCustomId(
-            `type_score:${app.id}:${index}`
-          )
-          .setLabel(
-            'Enter Score'
-          )
-          .setEmoji('✏️')
-          .setStyle(
-            ButtonStyle.Success
-          ),
-
-        new ButtonBuilder()
-          .setCustomId(
-            `choose_question:${app.id}`
-          )
-          .setLabel(
-            'Enter Another Question #'
-          )
-          .setEmoji('🔢')
-          .setStyle(
-            ButtonStyle.Primary
-          ),
-
-        new ButtonBuilder()
-          .setCustomId(
-            `finish_scoring:${app.id}`
-          )
-          .setLabel(
-            'Finish My Scoring'
-          )
-          .setEmoji('✅')
-          .setStyle(
-            ButtonStyle.Secondary
-          )
-      ),
-  ];
-}
-
-function allInterviewersFinished(
-  appId
-) {
-  const interviewers =
-    getInterviewers(
-      appId
-    );
-
-  if (
-    !interviewers.length
-  ) {
-    return false;
-  }
-
-  return interviewers.every(
-    id => {
-      const row =
-        db.prepare(`
-          SELECT finished
-          FROM score_sessions
-          WHERE app_id = ?
-            AND staff_id = ?
-        `).get(
-          appId,
-          id
-        );
-
-      return (
-        row?.finished ===
-        1
-      );
-    }
-  );
-}
-
-// =====================================================
 // RESULTS
 // =====================================================
-
-function categoryScoresForStaff(
-  app,
-  staffId
-) {
-  const selected =
-    getSelectedQuestions(
-      app
-    );
-
-  return QUESTION_CATEGORIES.map(
-    (
-      category,
-      categoryIndex
-    ) => {
-      const categoryQuestions =
-        selected.filter(
-          question =>
-            question.categoryIndex ===
-            categoryIndex
-        );
-
-      let total = 0;
-
-      for (
-        const question
-        of categoryQuestions
-      ) {
-        const row =
-          db.prepare(`
-            SELECT score
-            FROM scores
-            WHERE app_id = ?
-              AND staff_id = ?
-              AND question_key = ?
-          `).get(
-            app.id,
-            staffId,
-            question.key
-          );
-
-        total +=
-          row?.score ||
-          0;
-      }
-
-      return {
-        name:
-          category.name,
-
-        total,
-
-        max:
-          9,
-      };
-    }
-  );
-}
 
 async function postResults(
   appId
@@ -3935,96 +4278,123 @@ async function postResults(
       app.id
     );
 
-  const staffTotals =
-    interviewers.map(
-      id => ({
-        id,
-
-        ...interviewerScore(
-          app.id,
-          id
-        ),
-      })
-    );
-
-  const combined =
-    staffTotals.reduce(
-      (
-        sum,
-        staff
-      ) =>
-        sum +
-        staff.total,
-
-      0
-    );
-
-  const combinedMax =
-    63 *
-    Math.max(
-      interviewers.length,
-      1
-    );
-
-  const percent =
-    combinedMax
-      ? (
-          combined /
-          combinedMax
-        ) *
-        100
-      : 0;
-
   const fields = [];
 
+  let combinedTotal = 0;
+
+  let combinedMax = 0;
+
   for (
-    const staff
-    of staffTotals
+    const staffId
+    of interviewers
   ) {
-    fields.push({
-      name:
-        `Interviewer: <@${staff.id}>`,
-
-      value:
-        `**${staff.total}/63** — ${((staff.total / 63) * 100).toFixed(1)}%`,
-
-      inline:
-        false,
-    });
-
-    const categories =
-      categoryScoresForStaff(
-        app,
-        staff.id
+    const records =
+      getAllCategoryRecords(
+        app.id,
+        staffId
       );
 
+    const byIndex =
+      new Map(
+        records.map(
+          row => [
+            row.category_index,
+            row,
+          ]
+        )
+      );
+
+    let total = 0;
+
+    const categoryLines =
+      QUESTION_CATEGORIES.map(
+        (
+          category,
+          index
+        ) => {
+          const row =
+            byIndex.get(
+              index
+            );
+
+          const score =
+            Number.isInteger(
+              row?.score
+            )
+              ? row.score
+              : 0;
+
+          total +=
+            score;
+
+          return [
+            `**${category.name} — ${score}/3**`,
+
+            `Notes: ${
+              row?.notes
+                ? row.notes.slice(
+                    0,
+                    500
+                  )
+                : '_No notes_'
+            }`,
+          ].join('\n');
+        }
+      );
+
+    combinedTotal +=
+      total;
+
+    combinedMax +=
+      MAX_SCORE_PER_INTERVIEWER;
+
     fields.push({
       name:
-        'Category Scores',
+        `📝 Interviewer: <@${staffId}>`,
 
-      value:
-        categories
-          .map(
-            category =>
-              `${category.name}: **${category.total}/${category.max}**`
-          )
-          .join('\n')
-          .slice(
-            0,
-            1024
-          ),
+      value: [
+        ...categoryLines,
+
+        '',
+
+        `**TOTAL: ${total}/${MAX_SCORE_PER_INTERVIEWER}**`,
+
+        `**${(
+          (
+            total /
+            MAX_SCORE_PER_INTERVIEWER
+          ) *
+          100
+        ).toFixed(
+          1
+        )}%**`,
+      ]
+        .join('\n')
+        .slice(
+          0,
+          1024
+        ),
 
       inline:
         false,
     });
   }
 
+  const overallPercent =
+    combinedMax
+      ? (
+          combinedTotal /
+          combinedMax
+        ) *
+        100
+      : 0;
+
   fields.push({
     name:
-      'Combined Result',
+      '🏆 Combined Result',
 
     value:
-      `**${combined}/${combinedMax}**\n**${percent.toFixed(1)}%**`,
+      `**${combinedTotal}/${combinedMax}**\n**${overallPercent.toFixed(1)}%**`,
 
     inline:
       false,
@@ -4034,7 +4404,8 @@ async function postResults(
     embeds: [
       new EmbedBuilder()
         .setTitle(
-          app.mode === 'test'
+          app.mode ===
+            'test'
             ? '🧪 TEST Interview Scores'
             : '📊 Crafted SMP Staff Interview Scores'
         )
@@ -4045,7 +4416,7 @@ async function postResults(
 
           '',
 
-          '**These scores are permanent.**',
+          '**These scores and notes are staff-only and permanent.**',
         ].join('\n'))
         .addFields(
           fields
@@ -4096,7 +4467,8 @@ async function postResults(
   });
 
   if (
-    app.mode === 'test'
+    app.mode ===
+    'test'
   ) {
     markTestCheck(
       'results'
@@ -4104,11 +4476,18 @@ async function postResults(
   }
 }
 
+// =====================================================
+// CLEANUP TEMPORARY INTERVIEW CHANNELS + PANELS
+// =====================================================
+
 async function cleanupInterviewChannels(
   app,
-  guild
+  guild,
+  {
+    deleteControlMessages = true,
+  } = {}
 ) {
-  const channels = [
+  const channelIds = [
     app.interview_voice_channel_id,
 
     app.scoring_channel_id,
@@ -4118,7 +4497,7 @@ async function cleanupInterviewChannels(
 
   for (
     const channelId
-    of channels
+    of channelIds
   ) {
     if (
       !channelId
@@ -4140,7 +4519,7 @@ async function cleanupInterviewChannels(
     ) {
       await channel
         .delete(
-          `Interview ${app.id} completed`
+          `Cleaning interview ${app.id}`
         )
         .catch(
           () => null
@@ -4148,23 +4527,91 @@ async function cleanupInterviewChannels(
     }
   }
 
+  if (
+    deleteControlMessages
+  ) {
+    await deleteMessageIfPossible(
+      INTERVIEW_NOTIFICATION_CHANNEL_ID,
+      app.notification_message_id
+    );
+
+    await deleteMessageIfPossible(
+      APPLICATION_CONTROL_CHANNEL_ID,
+      app.control_message_id
+    );
+  }
+
   db.prepare(`
     UPDATE applications
     SET
       interview_voice_channel_id = NULL,
       scoring_channel_id = NULL,
-      interview_text_channel_id = NULL
+      interview_text_channel_id = NULL,
+      notification_message_id = NULL,
+      control_message_id = NULL
     WHERE id = ?
   `).run(
     app.id
   );
 
   if (
-    app.mode === 'test'
+    app.mode ===
+    'test'
   ) {
     markTestCheck(
       'cleanup'
     );
+  }
+}
+
+async function invalidateInterviewBecauseStaffCancelled(
+  app,
+  guild
+) {
+  await cleanupInterviewChannels(
+    app,
+    guild
+  );
+
+  db.prepare(`
+    UPDATE applications
+    SET status = 'pending'
+    WHERE id = ?
+  `).run(
+    app.id
+  );
+
+  await postSubmittedApplication(
+    app.id
+  );
+
+  const notificationChannel =
+    await fetchTextChannel(
+      INTERVIEW_NOTIFICATION_CHANNEL_ID
+    );
+
+  if (
+    notificationChannel
+  ) {
+    await notificationChannel.send({
+      embeds: [
+        new EmbedBuilder()
+          .setTitle(
+            '⚠️ Interview Needs New Staff Confirmation'
+          )
+          .setDescription([
+            `**Applicant:** <@${app.user_id}>`,
+
+            '',
+
+            'An interviewer cancelled and the interview no longer has enough confirmed staff.',
+
+            '',
+
+            'The temporary interview channels and old panels were deleted to avoid confusion.',
+          ].join('\n')),
+      ],
+    });
   }
 }
 
@@ -4200,7 +4647,7 @@ async function endInterview(
     )
   ) {
     throw new Error(
-      'Every interviewer must finish all 21 scores first.'
+      'Every interviewer must finish all 7 category scores first.'
     );
   }
 
@@ -4272,14 +4719,14 @@ async function resetTestData(
     );
 
     db.prepare(`
-      DELETE FROM scores
+      DELETE FROM category_scores
       WHERE app_id = ?
     `).run(
       app.id
     );
 
     db.prepare(`
-      DELETE FROM score_sessions
+      DELETE FROM question_sessions
       WHERE app_id = ?
     `).run(
       app.id
@@ -4475,7 +4922,8 @@ client.on(
         if (
           getSetting(
             'system_mode'
-          ) !== 'test'
+          ) !==
+          'test'
         ) {
           return safeEphemeral(
             interaction,
@@ -4698,10 +5146,12 @@ client.on(
             : 'real';
 
         if (
-          mode === 'test' &&
+          mode ===
+            'test' &&
           getSetting(
             'system_mode'
-          ) !== 'test'
+          ) !==
+            'test'
         ) {
           return safeEphemeral(
             interaction,
@@ -4710,10 +5160,12 @@ client.on(
         }
 
         if (
-          mode === 'real' &&
+          mode ===
+            'real' &&
           getSetting(
             'system_mode'
-          ) !== 'public'
+          ) !==
+            'public'
         ) {
           return safeEphemeral(
             interaction,
@@ -4803,7 +5255,8 @@ client.on(
           );
 
         if (
-          mode === 'test'
+          mode ===
+          'test'
         ) {
           markTestCheck(
             'application_form'
@@ -5126,7 +5579,8 @@ client.on(
           );
 
         if (
-          app.mode === 'test'
+          app.mode ===
+          'test'
         ) {
           markTestCheck(
             'staff_approvals'
@@ -5194,7 +5648,7 @@ client.on(
               .split(':')[1]
           );
 
-        const app =
+        let app =
           getApplication(
             appId
           );
@@ -5205,6 +5659,22 @@ client.on(
           return safeEphemeral(
             interaction,
             'Application not found.'
+          );
+        }
+
+        const wasInterviewer =
+          getInterviewers(
+            app.id
+          ).includes(
+            interaction.user.id
+          );
+
+        if (
+          !wasInterviewer
+        ) {
+          return safeEphemeral(
+            interaction,
+            'You are not currently an interviewer for this application.'
           );
         }
 
@@ -5227,7 +5697,7 @@ client.on(
         );
 
         db.prepare(`
-          DELETE FROM scores
+          DELETE FROM category_scores
           WHERE app_id = ?
             AND staff_id = ?
         `).run(
@@ -5236,7 +5706,7 @@ client.on(
         );
 
         db.prepare(`
-          DELETE FROM score_sessions
+          DELETE FROM question_sessions
           WHERE app_id = ?
             AND staff_id = ?
         `).run(
@@ -5252,15 +5722,21 @@ client.on(
 
         if (
           !approval.confirmed &&
-          app.status ===
-            'confirmed'
+          [
+            'confirmed',
+            'in_progress',
+          ].includes(
+            app.status
+          )
         ) {
-          db.prepare(`
-            UPDATE applications
-            SET status = 'pending'
-            WHERE id = ?
-          `).run(
-            app.id
+          await invalidateInterviewBecauseStaffCancelled(
+            app,
+            guild
+          );
+
+          return safeEphemeral(
+            interaction,
+            '✅ You were removed. There were no longer enough confirmed interviewers, so the temporary interview panels/channels were deleted to avoid confusion.'
           );
         }
 
@@ -5270,7 +5746,7 @@ client.on(
 
         return safeEphemeral(
           interaction,
-          '✅ You are no longer an interviewer for this application.'
+          '✅ You are no longer an interviewer for this application. Your scoring data was removed.'
         );
       }
 
@@ -5359,13 +5835,15 @@ client.on(
                     )
                 ),
             ],
-          }).catch(
-            () => null
-          );
+          })
+            .catch(
+              () => null
+            );
         }
 
         if (
-          app.mode === 'test'
+          app.mode ===
+          'test'
         ) {
           markTestCheck(
             'rescheduling'
@@ -5418,7 +5896,7 @@ client.on(
       }
 
       // =================================================
-      // APPLICANT CANCEL INTERVIEW
+      // APPLICANT CANCEL
       // =================================================
 
       if (
@@ -5574,7 +6052,7 @@ client.on(
       }
 
       // =================================================
-      // START TEST NOW
+      // TEST START NOW
       // =================================================
 
       if (
@@ -5734,13 +6212,13 @@ client.on(
       }
 
       // =================================================
-      // CHOOSE QUESTION NUMBER
+      // OPEN QUESTIONS
       // =================================================
 
       if (
         interaction.isButton() &&
         interaction.customId.startsWith(
-          'choose_question:'
+          'open_questions:'
         )
       ) {
         if (
@@ -5787,17 +6265,65 @@ client.on(
           );
         }
 
-        return interaction.showModal(
-          questionNumberModal(
-            app.id
-          )
-        );
+        const session =
+          getQuestionSession(
+            app.id,
+            interaction.user.id
+          );
+
+        const index =
+          Math.max(
+            0,
+            Math.min(
+              ALL_QUESTIONS.length -
+                1,
+              session.current_index
+            )
+          );
+
+        if (
+          app.mode ===
+          'test'
+        ) {
+          markTestCheck(
+            'questions'
+          );
+        }
+
+        return interaction.reply({
+          embeds: [
+            questionEmbed(
+              app,
+              interaction.user.id,
+              index
+            ),
+          ],
+
+          components:
+            questionRows(
+              app,
+              interaction.user.id,
+              index
+            ),
+
+          flags:
+            MessageFlags.Ephemeral,
+        });
       }
 
+      // =================================================
+      // PREVIOUS / NEXT QUESTION
+      // =================================================
+
       if (
-        interaction.isModalSubmit() &&
-        interaction.customId.startsWith(
-          'question_number_modal:'
+        interaction.isButton() &&
+        (
+          interaction.customId.startsWith(
+            'question_prev:'
+          ) ||
+          interaction.customId.startsWith(
+            'question_next:'
+          )
         )
       ) {
         const appId =
@@ -5833,116 +6359,73 @@ client.on(
           );
         }
 
-        const raw =
-          interaction.fields
-            .getTextInputValue(
-              'question_number'
-            )
-            .trim();
+        const session =
+          getQuestionSession(
+            app.id,
+            interaction.user.id
+          );
 
-        if (
-          !/^\d+$/.test(
-            raw
+        const delta =
+          interaction.customId.startsWith(
+            'question_next:'
           )
-        ) {
-          return safeEphemeral(
-            interaction,
-            '❌ Enter a whole number from 1 to 21.'
+            ? 1
+            : -1;
+
+        const nextIndex =
+          Math.max(
+            0,
+            Math.min(
+              ALL_QUESTIONS.length -
+                1,
+              session.current_index +
+                delta
+            )
           );
-        }
-
-        const number =
-          Number(
-            raw
-          );
-
-        if (
-          number < 1 ||
-          number > 21
-        ) {
-          return safeEphemeral(
-            interaction,
-            '❌ Question number must be between 1 and 21.'
-          );
-        }
-
-        const index =
-          number - 1;
-
-        const questions =
-          getSelectedQuestions(
-            app
-          );
-
-        if (
-          !questions[
-            index
-          ]
-        ) {
-          return safeEphemeral(
-            interaction,
-            '❌ Question not found.'
-          );
-        }
-
-        getScoreSession(
-          app.id,
-          interaction.user.id
-        );
 
         db.prepare(`
-          UPDATE score_sessions
+          UPDATE question_sessions
           SET current_index = ?
           WHERE app_id = ?
             AND staff_id = ?
         `).run(
-          index,
+          nextIndex,
           app.id,
           interaction.user.id
         );
 
-        if (
-          app.mode === 'test'
-        ) {
-          markTestCheck(
-            'typed_question'
-          );
-        }
-
-        return interaction.reply({
+        return interaction.update({
           embeds: [
             questionEmbed(
               app,
               interaction.user.id,
-              index
+              nextIndex
             ),
           ],
 
           components:
             questionRows(
               app,
-              index
+              interaction.user.id,
+              nextIndex
             ),
-
-          flags:
-            MessageFlags.Ephemeral,
         });
       }
 
       // =================================================
-      // ENTER SCORE
+      // TYPE CATEGORY SCORE
       // =================================================
 
       if (
         interaction.isButton() &&
         interaction.customId.startsWith(
-          'type_score:'
+          'score_category:'
         )
       ) {
         const [
           ,
           appIdRaw,
-          indexRaw,
+          categoryIndexRaw,
         ] =
           interaction.customId
             .split(':');
@@ -5972,15 +6455,15 @@ client.on(
         ) {
           return safeEphemeral(
             interaction,
-            '❌ You are not an interviewer.'
+            '❌ You are not a confirmed interviewer.'
           );
         }
 
         return interaction.showModal(
-          scoreModal(
+          categoryScoreModal(
             app.id,
             Number(
-              indexRaw
+              categoryIndexRaw
             )
           )
         );
@@ -5989,30 +6472,27 @@ client.on(
       if (
         interaction.isModalSubmit() &&
         interaction.customId.startsWith(
-          'score_modal:'
+          'category_score_modal:'
         )
       ) {
         const [
           ,
           appIdRaw,
-          indexRaw,
+          categoryIndexRaw,
         ] =
           interaction.customId
             .split(':');
 
-        const appId =
-          Number(
-            appIdRaw
-          );
-
-        const index =
-          Number(
-            indexRaw
-          );
-
         const app =
           getApplication(
-            appId
+            Number(
+              appIdRaw
+            )
+          );
+
+        const categoryIndex =
+          Number(
+            categoryIndexRaw
           );
 
         if (
@@ -6033,57 +6513,53 @@ client.on(
         ) {
           return safeEphemeral(
             interaction,
-            '❌ You are not an interviewer.'
+            '❌ You are not a confirmed interviewer.'
           );
         }
 
-        const scoreRaw =
+        const raw =
           interaction.fields
             .getTextInputValue(
-              'score'
+              'category_score'
             )
             .trim();
 
-        if (
-          !/^[0-3]$/.test(
-            scoreRaw
-          )
-        ) {
-          return safeEphemeral(
-            interaction,
-            '❌ Score must be 0, 1, 2, or 3.'
+        const match =
+          raw.match(
+            /^([0-3])(?:\s*\/\s*3)?$/
           );
-        }
-
-        const question =
-          getSelectedQuestions(
-            app
-          )[
-            index
-          ];
 
         if (
-          !question
+          !match
         ) {
           return safeEphemeral(
             interaction,
-            'Question not found.'
+            '❌ Enter 0/3, 1/3, 2/3, or 3/3.'
           );
         }
 
         const score =
           Number(
-            scoreRaw
+            match[1]
+          );
+
+        const existing =
+          getCategoryRecord(
+            app.id,
+            interaction.user.id,
+            categoryIndex
           );
 
         db.prepare(`
-          INSERT INTO scores(
+          INSERT INTO category_scores(
             app_id,
             staff_id,
-            question_key,
-            score
+            category_index,
+            score,
+            notes
           )
           VALUES(
+            ?,
             ?,
             ?,
             ?,
@@ -6093,48 +6569,53 @@ client.on(
           ON CONFLICT(
             app_id,
             staff_id,
-            question_key
+            category_index
           )
 
           DO UPDATE SET
-            score = excluded.score
+            score =
+              excluded.score
         `).run(
           app.id,
           interaction.user.id,
-          question.key,
-          score
+          categoryIndex,
+          score,
+          existing?.notes ||
+            ''
         );
 
         if (
-          app.mode === 'test'
+          app.mode ===
+          'test'
         ) {
           markTestCheck(
-            'typed_score'
+            'category_scoring'
           );
         }
 
-        const progress =
-          interviewerScore(
+        const session =
+          getQuestionSession(
             app.id,
             interaction.user.id
           );
 
         return interaction.reply({
           content:
-            `✅ Question **${index + 1}** saved as **${score}/3**. Progress: **${progress.count}/21**`,
+            `✅ ${QUESTION_CATEGORIES[categoryIndex].name} saved as **${score}/3**.`,
 
           embeds: [
             questionEmbed(
               app,
               interaction.user.id,
-              index
+              session.current_index
             ),
           ],
 
           components:
             questionRows(
               app,
-              index
+              interaction.user.id,
+              session.current_index
             ),
 
           flags:
@@ -6143,13 +6624,217 @@ client.on(
       }
 
       // =================================================
-      // VIEW PROGRESS
+      // CATEGORY NOTES
       // =================================================
 
       if (
         interaction.isButton() &&
         interaction.customId.startsWith(
-          'view_progress:'
+          'notes_category:'
+        )
+      ) {
+        const [
+          ,
+          appIdRaw,
+          categoryIndexRaw,
+        ] =
+          interaction.customId
+            .split(':');
+
+        const app =
+          getApplication(
+            Number(
+              appIdRaw
+            )
+          );
+
+        const categoryIndex =
+          Number(
+            categoryIndexRaw
+          );
+
+        if (
+          !app
+        ) {
+          return safeEphemeral(
+            interaction,
+            'Application not found.'
+          );
+        }
+
+        if (
+          !getInterviewers(
+            app.id
+          ).includes(
+            interaction.user.id
+          )
+        ) {
+          return safeEphemeral(
+            interaction,
+            '❌ You are not a confirmed interviewer.'
+          );
+        }
+
+        const current =
+          getCategoryRecord(
+            app.id,
+            interaction.user.id,
+            categoryIndex
+          );
+
+        return interaction.showModal(
+          categoryNotesModal(
+            app.id,
+            categoryIndex,
+            current?.notes ||
+              ''
+          )
+        );
+      }
+
+      if (
+        interaction.isModalSubmit() &&
+        interaction.customId.startsWith(
+          'category_notes_modal:'
+        )
+      ) {
+        const [
+          ,
+          appIdRaw,
+          categoryIndexRaw,
+        ] =
+          interaction.customId
+            .split(':');
+
+        const app =
+          getApplication(
+            Number(
+              appIdRaw
+            )
+          );
+
+        const categoryIndex =
+          Number(
+            categoryIndexRaw
+          );
+
+        if (
+          !app
+        ) {
+          return safeEphemeral(
+            interaction,
+            'Application not found.'
+          );
+        }
+
+        if (
+          !getInterviewers(
+            app.id
+          ).includes(
+            interaction.user.id
+          )
+        ) {
+          return safeEphemeral(
+            interaction,
+            '❌ You are not a confirmed interviewer.'
+          );
+        }
+
+        const notes =
+          interaction.fields
+            .getTextInputValue(
+              'category_notes'
+            )
+            .trim();
+
+        const current =
+          getCategoryRecord(
+            app.id,
+            interaction.user.id,
+            categoryIndex
+          );
+
+        db.prepare(`
+          INSERT INTO category_scores(
+            app_id,
+            staff_id,
+            category_index,
+            score,
+            notes
+          )
+          VALUES(
+            ?,
+            ?,
+            ?,
+            ?,
+            ?
+          )
+
+          ON CONFLICT(
+            app_id,
+            staff_id,
+            category_index
+          )
+
+          DO UPDATE SET
+            notes =
+              excluded.notes
+        `).run(
+          app.id,
+          interaction.user.id,
+          categoryIndex,
+          current?.score ??
+            null,
+          notes
+        );
+
+        if (
+          app.mode ===
+          'test'
+        ) {
+          markTestCheck(
+            'category_notes'
+          );
+        }
+
+        const session =
+          getQuestionSession(
+            app.id,
+            interaction.user.id
+          );
+
+        return interaction.reply({
+          content:
+            `✅ Notes saved for ${QUESTION_CATEGORIES[categoryIndex].name}.`,
+
+          embeds: [
+            questionEmbed(
+              app,
+              interaction.user.id,
+              session.current_index
+            ),
+          ],
+
+          components:
+            questionRows(
+              app,
+              interaction.user.id,
+              session.current_index
+            ),
+
+          flags:
+            MessageFlags.Ephemeral,
+        });
+      }
+
+      // =================================================
+      // VIEW SCORE PROGRESS
+      // =================================================
+
+      if (
+        interaction.isButton() &&
+        interaction.customId.startsWith(
+          'view_score_progress:'
         )
       ) {
         const appId =
@@ -6181,86 +6866,16 @@ client.on(
         ) {
           return safeEphemeral(
             interaction,
-            '❌ You are not an interviewer.'
+            '❌ You are not a confirmed interviewer.'
           );
         }
 
-        const questions =
-          getSelectedQuestions(
-            app
-          );
-
-        const scored =
-          db.prepare(`
-            SELECT
-              question_key,
-              score
-            FROM scores
-            WHERE app_id = ?
-              AND staff_id = ?
-          `).all(
-            app.id,
-            interaction.user.id
-          );
-
-        const scoreMap =
-          new Map(
-            scored.map(
-              row => [
-                row.question_key,
-                row.score,
-              ]
-            )
-          );
-
-        const total =
-          interviewerScore(
-            app.id,
-            interaction.user.id
-          );
-
-        const lines =
-          questions.map(
-            (
-              question,
-              index
-            ) => {
-              const score =
-                scoreMap.get(
-                  question.key
-                );
-
-              return `${
-                score ===
-                undefined
-                  ? '⬜'
-                  : '✅'
-              } Q${index + 1}: ${
-                score ===
-                undefined
-                  ? 'Not scored'
-                  : `${score}/3`
-              }`;
-            }
-          );
-
         return interaction.reply({
           embeds: [
-            new EmbedBuilder()
-              .setTitle(
-                '📊 My Scoring Progress'
-              )
-              .setDescription([
-                `**Applicant:** <@${app.user_id}>`,
-
-                `**Scored:** ${total.count}/21`,
-
-                `**Total:** ${total.total}/63`,
-
-                '',
-
-                ...lines,
-              ].join('\n')),
+            scoreProgressEmbed(
+              app,
+              interaction.user.id
+            ),
           ],
 
           flags:
@@ -6311,24 +6926,24 @@ client.on(
           );
         }
 
-        const total =
-          interviewerScore(
+        const summary =
+          scoreSummary(
             app.id,
             interaction.user.id
           );
 
         if (
-          total.count !==
-          21
+          summary.scoredCount !==
+          CATEGORY_COUNT
         ) {
           return safeEphemeral(
             interaction,
-            `❌ You have scored ${total.count}/21 questions.`
+            `❌ You have scored **${summary.scoredCount}/${CATEGORY_COUNT}** categories. Every category needs a score before you finish.`
           );
         }
 
         db.prepare(`
-          INSERT INTO score_sessions(
+          INSERT INTO question_sessions(
             app_id,
             staff_id,
             current_index,
@@ -6337,7 +6952,7 @@ client.on(
           VALUES(
             ?,
             ?,
-            20,
+            ?,
             1
           )
 
@@ -6350,12 +6965,14 @@ client.on(
             finished = 1
         `).run(
           app.id,
-          interaction.user.id
+          interaction.user.id,
+          ALL_QUESTIONS.length -
+            1
         );
 
         return safeEphemeral(
           interaction,
-          `✅ Scoring finished. Final score: **${total.total}/63** (${((total.total / 63) * 100).toFixed(1)}%).`
+          `✅ Scoring finished. Final score: **${summary.total}/${MAX_SCORE_PER_INTERVIEWER}** (${((summary.total / MAX_SCORE_PER_INTERVIEWER) * 100).toFixed(1)}%).`
         );
       }
 
@@ -6407,7 +7024,7 @@ client.on(
         ) {
           return safeEphemeral(
             interaction,
-            '❌ Every interviewer must finish all 21 scores first.'
+            '❌ Every interviewer must finish all 7 category scores first.'
           );
         }
 
@@ -6417,7 +7034,7 @@ client.on(
 
             '',
 
-            `✅ Permanent scores will be saved in <#${INTERVIEW_RESULTS_CHANNEL_ID}>`,
+            `✅ Permanent scores and notes will be saved in <#${INTERVIEW_RESULTS_CHANNEL_ID}>`,
 
             '🗑️ Temporary interview text/voice/scoring channels will be deleted.',
           ].join('\n'),
@@ -6501,7 +7118,7 @@ client.on(
 
           return interaction.editReply({
             content:
-              `✅ Meeting ended. Permanent scores were saved in <#${INTERVIEW_RESULTS_CHANNEL_ID}> and temporary channels were deleted.`,
+              `✅ Meeting ended. Permanent scores/notes were saved in <#${INTERVIEW_RESULTS_CHANNEL_ID}> and temporary channels were deleted.`,
 
             components: [],
           });
@@ -6517,7 +7134,8 @@ client.on(
       }
 
       // =================================================
-      // FINAL RESULT
+      // FINAL DECISION
+      // Applicant is NOT notified of results.
       // =================================================
 
       if (
@@ -6544,14 +7162,11 @@ client.on(
           interaction.customId
             .split(':');
 
-        const appId =
-          Number(
-            appIdRaw
-          );
-
         const app =
           getApplication(
-            appId
+            Number(
+              appIdRaw
+            )
           );
 
         if (
@@ -6570,9 +7185,11 @@ client.on(
           );
 
         const status =
-          action === 'accept'
+          action ===
+            'accept'
             ? 'accepted'
-            : action === 'reject'
+            : action ===
+                'reject'
               ? 'rejected'
               : 'further_review';
 
@@ -6589,39 +7206,11 @@ client.on(
           app.id
         );
 
-        const user =
-          await client.users
-            .fetch(
-              app.user_id
-            )
-            .catch(
-              () => null
-            );
-
-        if (
-          user
-        ) {
-          const message =
-            app.mode === 'test'
-              ? `🧪 TEST RESULT: ${statusLabel(status)}`
-              : status === 'accepted'
-                ? '✅ Your Crafted SMP staff application was accepted!'
-                : status === 'rejected'
-                  ? '❌ Your Crafted SMP staff application was not accepted at this time.'
-                  : '🟡 Your Crafted SMP staff application is under further review.';
-
-          await user
-            .send(
-              message
-            )
-            .catch(
-              () => null
-            );
-        }
+        // Applicant intentionally receives NO score/result message.
 
         return safeEphemeral(
           interaction,
-          `✅ Application marked as **${statusLabel(status)}**.`
+          `✅ Application marked as **${statusLabel(status)}**. The applicant was not shown the result.`
         );
       }
 
